@@ -1,6 +1,6 @@
 // Calendario: mes, semana y lista. Las tarjetas se pueden arrastrar a otro día para cambiar su fecha.
 import * as S from '../store.js';
-import { esc, icon, todayStr, addDays, parseDate, dateStr, DOW, MONTHS, cap, isOverdue, toast, dueLabel } from '../util.js';
+import { esc, icon, todayStr, addDays, parseDate, dateStr, DOW, MONTHS, cap, isOverdue, toast, dueLabel, paint } from '../util.js';
 import { miniRow, sortByDue } from './parts.js';
 import { enableDrag } from '../drag.js';
 import { openCard, openNewTask } from '../sheets.js';
@@ -44,6 +44,7 @@ export function renderCalendar(main, routeBoard = null) {
       ${view.mode !== 'list' ? `<button type="button" class="icon-btn" data-nav="-1" aria-label="${view.mode === 'month' ? 'Mes' : 'Semana'} anterior">${icon('left', 's')}</button>
       <button type="button" class="btn sm" data-nav="0">Hoy</button>
       <button type="button" class="icon-btn" data-nav="1" aria-label="${view.mode === 'month' ? 'Mes' : 'Semana'} siguiente">${icon('right', 's')}</button>` : ''}
+      ${view.mode !== 'month' && S.boards().some((bb) => S.can(bb.id, 'write')) ? `<button type="button" class="btn primary sm desk-only" data-new="${view.selected}">${icon('plus', 's')} Nueva tarea</button>` : ''}
     </div>`;
 
   let body = '';
@@ -64,23 +65,25 @@ export function renderCalendar(main, routeBoard = null) {
       <div class="cal-grid">${cells}</div></div>`;
   } else if (view.mode === 'week') {
     const start = mondayOf(view.selected);
-    body = Array.from({ length: 7 }, (_, i) => addDays(start, i)).map((d) => {
+    body = '<div class="week-grid">' + Array.from({ length: 7 }, (_, i) => addDays(start, i)).map((d) => {
       const list = byDay.get(d) || [];
       const dd = parseDate(d);
       return `<div class="week-day ${d === t ? 'today' : ''}" data-drop-day="${d}">
         <h3><span>${esc(cap(DOW[dd.getDay()]))} ${dd.getDate()} ${esc(MONTHS[dd.getMonth()])}</span><span>${list.length || ''}</span></h3>
         ${list.map((c) => miniRow(c, true)).join('')}</div>`;
-    }).join('');
+    }).join('') + '</div>';
   } else {
     const overdue = cards.filter((c) => !c.data.done && !c.data.archived && isOverdue(c.data)).sort(sortByDue);
     const days = [...byDay.keys()].filter((d) => d >= t).sort().slice(0, 60);
-    body = (overdue.length ? `<div class="week-day"><h3 class="error-text"><span>Vencidas</span><span>${overdue.length}</span></h3>
+    body = '<div class="list-grid">' + (overdue.length ? `<div class="week-day"><h3 class="error-text"><span>Vencidas</span><span>${overdue.length}</span></h3>
         ${overdue.map((c) => miniRowWithDate(c)).join('')}</div>` : '')
       + (days.length ? days.map((d) => {
         const dd = parseDate(d);
-        return `<div class="week-day ${d === t ? 'today' : ''}" data-drop-day="${d}"><h3><span>${esc(cap(dueLabel(d)))} · ${dd.getDate()} ${esc(MONTHS[dd.getMonth()])}</span></h3>
+        const rel = dueLabel(d);
+        const head = /^\d/.test(rel) ? `${cap(DOW[dd.getDay()])} · ${dd.getDate()} ${MONTHS[dd.getMonth()]}` : `${cap(rel)} · ${dd.getDate()} ${MONTHS[dd.getMonth()]}`;
+        return `<div class="week-day ${d === t ? 'today' : ''}" data-drop-day="${d}"><h3><span>${esc(head)}</span></h3>
           ${byDay.get(d).map((c) => miniRow(c, true)).join('')}</div>`;
-      }).join('') : '<div class="empty">No hay tareas con fecha a partir de hoy.</div>');
+      }).join('') : '<div class="empty">No hay tareas con fecha a partir de hoy.</div>') + '</div>';
   }
 
   const sel = parseDate(view.selected);
@@ -91,11 +94,11 @@ export function renderCalendar(main, routeBoard = null) {
       ${S.boards().some((bb) => S.can(bb.id, 'write')) ? `<div class="sep"></div><button type="button" class="btn block" data-new="${view.selected}">${icon('plus', 's')} Añadir tarea este día</button>` : ''}
       <p class="hint">Mantén pulsada una tarea y arrástrala a otro día para cambiar su fecha.</p></div>` : '';
 
-  main.innerHTML = `${header}
+  main.innerHTML = `<div class="page wide">${header}
     ${view.mode === 'month' ? `<div class="section"><h2 class="cal-title">${esc(cap(MONTHS[m - 1]))} <span class="muted">${y}</span></h2></div>` : ''}
     ${modeBar}
-    <div class="cal-wrap"><div class="cal-side" id="cal-root"><div>${body}</div>${side}</div></div>
-    ${view.mode !== 'month' && S.boards().some((bb) => S.can(bb.id, 'write')) ? `<button type="button" class="fab" data-new="${view.selected}" aria-label="Nueva tarea">${icon('plus')}</button>` : ''}`;
+    <div class="cal-wrap"><div class="cal-side ${side ? '' : 'no-side'}" id="cal-root"><div>${body}</div>${side}</div></div></div>
+    ${view.mode !== 'month' && S.boards().some((bb) => S.can(bb.id, 'write')) ? `<button type="button" class="fab mobile-only" data-new="${view.selected}" aria-label="Nueva tarea">${icon('plus')}</button>` : ''}`;
 
   main.onclick = (e) => {
     const op = e.target.closest('[data-open]');
@@ -121,6 +124,7 @@ export function renderCalendar(main, routeBoard = null) {
     }
   };
 
+  paint(main);
   enableDrag(main.querySelector('#cal-root'), {
     onDrop: ({ id, day }) => {
       if (!day) return;

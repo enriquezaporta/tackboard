@@ -6,7 +6,7 @@ import { confirmDialog, openSheet } from '../ui.js';
 import { openInvitations } from '../sheets.js';
 import { showRecoveryCode } from './auth.js';
 
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '1.0.1';
 
 function syncText() {
   const s = S.state.sync;
@@ -27,9 +27,9 @@ export function syncClass() {
 export function renderSettings(main) {
   const u = S.state.user;
   const theme = S.state.settings.theme || 'auto';
-  main.innerHTML = `
+  main.innerHTML = `<div class="page">
     <header class="page-head"><h1>Ajustes</h1></header>
-    <div class="section today-wrap">
+    <div class="section settings-grid"><div class="settings-col">
       <h2 class="section-title">Cuenta</h2>
       <div class="list">
         <div class="list-row"><span class="avatar" data-c="#0E6B62">${esc((u.name || u.username).charAt(0))}</span>
@@ -53,7 +53,7 @@ export function renderSettings(main) {
       <div class="list"><div class="list-row"><span class="grow">Tema</span>
         <span class="seg" role="group" aria-label="Tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([k, n]) =>
           `<button type="button" data-theme-set="${k}" aria-pressed="${theme === k}">${n}</button>`).join('')}</span></div></div>
-
+    </div><div class="settings-col">
       <h2 class="section-title">Seguridad</h2>
       <div class="list">
         <button type="button" class="list-row" data-act="pw"><span class="grow">Cambiar contraseña</span>${icon('right', 's')}</button>
@@ -72,7 +72,7 @@ export function renderSettings(main) {
       <div class="sep"></div>
       <button type="button" class="btn block" data-act="logout">Cerrar sesión</button>
       <p class="hint">Tackboard ${APP_VERSION} · <a href="https://github.com/enriquezaporta/tackboard" rel="noopener noreferrer" target="_blank">Código fuente</a></p>
-    </div>`;
+    </div></div></div>`;
 
   main.querySelector('#acc-inv').addEventListener('change', async (e) => {
     try { const r = await post('/api/me', { acceptInvites: e.target.checked }); await S.setUser(r.user); }

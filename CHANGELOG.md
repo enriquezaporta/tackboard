@@ -1,5 +1,15 @@
 # Cambios
 
+## 1.0.1 — 2026-10-04
+
+- Diseño adaptado a tablet y escritorio: contenido centrado y aprovechando el ancho.
+  - *Hoy* en dos o tres columnas (hoy, próximos 7 días y resumen de tableros).
+  - Tableros como fichas con tareas abiertas, vencidas, hechas y progreso.
+  - *Ajustes* en dos columnas; pantalla de entrada centrada.
+  - Calendario: la semana en 7 columnas y la lista en rejilla.
+- Botón «Nueva tarea» en la cabecera en escritorio (el botón flotante queda para el móvil) y ya no tapa la última tarea.
+- Etiquetas más legibles en tema oscuro y colores que se conservaban al cambiar de vista en el calendario y el tablero.
+
 ## 1.0.0 — 2026-10-03
 
 Primera versión.

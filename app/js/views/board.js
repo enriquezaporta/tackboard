@@ -1,29 +1,42 @@
 // Lista de tableros y vista Kanban de un tablero.
 import * as S from '../store.js';
-import { esc, icon, plural, COLORS, toast } from '../util.js';
-import { boardCard } from './parts.js';
+import { esc, icon, plural, COLORS, toast, todayStr, paint } from '../util.js';
+import { boardCard, boardStats } from './parts.js';
 import { enableDrag } from '../drag.js';
 import { openCard, openNewBoard, openBoardMenu, openShare, openInvitations, openColumns } from '../sheets.js';
 
 // ---------- Lista de tableros ----------
 export function renderBoards(main) {
   const list = S.boards();
-  main.innerHTML = `
+  const t = todayStr();
+  main.innerHTML = `<div class="page">
     <header class="page-head"><h1>Tableros</h1>
-      <button type="button" class="btn primary sm" data-act="new">${icon('plus', 's')} Nuevo</button></header>
+      <button type="button" class="btn primary sm" data-act="new">${icon('plus', 's')} Nuevo tablero</button></header>
     <div class="section">
       ${S.state.invitations ? `<button type="button" class="callout list-row" data-act="inv">${icon('inbox')}
         <span class="grow">Tienes ${plural(S.state.invitations, 'invitación', 'invitaciones')}</span>${icon('right', 's')}</button><div class="sep"></div>` : ''}
-      ${list.length ? `<div class="list">${list.map((b) => {
-        const open = S.cards((c) => c.boardId === b.id && !c.data.done && !c.data.archived).length;
+      ${list.length ? `<div class="board-grid">${list.map((b) => {
+        const st = boardStats(b.id, t);
         const info = S.state.boardInfo.get(b.id);
         const role = S.roleOf(b.id);
-        return `<a class="list-row" href="#/tablero/${esc(b.id)}"><span class="sq" data-c="${esc(b.data.color)}"></span>
-          <span class="grow"><strong>${esc(b.data.name)}</strong><br><span class="small muted">${plural(open, 'tarea abierta', 'tareas abiertas')}${
-            info && info.members > 1 ? ` · compartido con ${info.members - 1}` : ''}${role !== 'owner' ? ` · ${S.ROLE_NAME[role]} (de @${esc(info?.owner || '?')})` : ''}</span></span>${icon('right', 's')}</a>`;
-      }).join('')}</div>`
-        : `<div class="empty"><strong>Aún no tienes tableros</strong>Crea uno para cada ámbito: Casa, Trabajo, Homelab…</div>`}
-    </div>`;
+        const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+        return `<a class="board-tile" href="#/tablero/${esc(b.id)}" data-c="${esc(b.data.color)}">
+          <span class="tile-top"><span class="sq" data-c="${esc(b.data.color)}"></span><strong class="tile-name">${esc(b.data.name)}</strong>
+            ${info && info.members > 1 ? `<span class="tile-shared" title="Compartido">${icon('users', 's')}${info.members}</span>` : ''}</span>
+          <span class="tile-stats">
+            <span><b>${st.open}</b> abiertas</span>
+            ${st.late ? `<span class="error-text"><b>${st.late}</b> vencidas</span>` : ''}
+            <span><b>${st.done}</b> hechas</span>
+          </span>
+          <span class="progress" aria-label="${pct}% completado"><i data-p="${pct}" data-c="${esc(b.data.color)}"></i></span>
+          <span class="tile-foot">${role === 'owner' ? (info && info.members > 1 ? `Compartido con ${info.members - 1}` : 'Solo tú')
+            : `${S.ROLE_NAME[role]} · de @${esc(info?.owner || '?')}`}</span>
+        </a>`;
+      }).join('')}
+        <button type="button" class="board-tile add" data-act="new">${icon('plus')}<span>Nuevo tablero</span></button></div>`
+        : `<div class="empty-card"><strong>Aún no tienes tableros</strong><span>Crea uno para cada ámbito: Casa, Trabajo, Homelab…</span>
+            <button type="button" class="btn primary" data-act="new">${icon('plus', 's')} Crear tablero</button></div>`}
+    </div></div>`;
   main.onclick = (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'new') openNewBoard();
@@ -101,6 +114,7 @@ export function renderBoard(main, boardId) {
     </div>
     ${canWrite ? `<p class="drag-hint">${filtering ? 'Quita el filtro para poder mover tarjetas.' : 'Mantén pulsada una tarjeta para moverla. También puedes cambiar su columna desde la propia tarjeta.'}</p>` : ''}`;
 
+  paint(main);
   const colsEl = main.querySelector('#columns');
   colsEl.scrollLeft = prevScroll;
   for (const n of main.querySelectorAll('[data-drop-col]')) n.scrollTop = prevLists.get(n.dataset.dropCol) || 0;

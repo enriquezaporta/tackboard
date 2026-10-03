@@ -70,3 +70,14 @@ export function miniRow(card, draggable) {
 }
 
 export const sortByDue = (a, b) => (a.data.due.localeCompare(b.data.due)) || ((a.data.dueTime || '99').localeCompare(b.data.dueTime || '99')) || a.data.title.localeCompare(b.data.title);
+
+/** Recuento de un tablero: abiertas, vencidas, hechas y total (sin archivadas). */
+export function boardStats(boardId, today) {
+  const list = S.cards((c) => c.boardId === boardId && !c.data.archived);
+  let open = 0, late = 0, done = 0;
+  for (const c of list) {
+    if (c.data.done) done++;
+    else { open++; if (c.data.due && c.data.due < today) late++; }
+  }
+  return { open, late, done, total: list.length };
+}
