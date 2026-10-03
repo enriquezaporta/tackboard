@@ -33,6 +33,9 @@ const MESSAGES = {
   owner_cannot_leave: 'El anfitrión no puede salir del tablero: tiene que borrarlo.',
   invitation: 'Esa invitación ya no existe.',
   network: 'No se puede conectar con el servidor.',
+  push_unavailable: 'El servidor no tiene activados los avisos (falta python3-cryptography).',
+  push_endpoint: 'Este navegador usa un servicio de avisos no admitido.',
+  push_keys: 'Las claves de avisos del dispositivo no son válidas.',
 };
 export const errorText = (e) => MESSAGES[e?.code] || (e?.status ? `Error del servidor (${e.status}).` : MESSAGES.network);
 

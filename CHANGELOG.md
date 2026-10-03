@@ -1,5 +1,12 @@
 # Cambios
 
+## 1.0.2 — 2026-10-04
+
+- Base de los avisos (Web Push): el servidor genera sus claves VAPID, guarda las suscripciones de cada dispositivo
+  y cifra cada aviso para él (RFC 8291). Solo se envía a los servicios de Apple, Google, Mozilla y Microsoft.
+- *Ajustes → Avisos (prueba)*: activar o desactivar las notificaciones en el dispositivo y enviar un aviso de prueba.
+- Nueva dependencia opcional del servidor: `python3-cryptography` (sin ella, todo funciona salvo los avisos).
+
 ## 1.0.1 — 2026-10-04
 
 - Diseño adaptado a tablet y escritorio: contenido centrado y aprovechando el ancho.

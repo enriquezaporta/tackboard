@@ -50,7 +50,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 ## Tecnología
 
 - **App**: HTML, CSS y JavaScript sin dependencias ni paso de compilación. IndexedDB y *service worker*.
-- **Servidor**: Python 3 (solo la biblioteca estándar) y SQLite.
+- **Servidor**: Python 3 y SQLite. Solo usa la biblioteca estándar, más `python3-cryptography` para cifrar los avisos.
 - **Caddy** delante: HTTPS, compresión y cabeceras de seguridad.
 - **Pruebas**: `python3 -m unittest discover -s tests`.
 

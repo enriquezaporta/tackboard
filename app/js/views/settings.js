@@ -5,8 +5,9 @@ import { esc, icon, toast } from '../util.js';
 import { confirmDialog, openSheet } from '../ui.js';
 import { openInvitations } from '../sheets.js';
 import { showRecoveryCode } from './auth.js';
+import { pushState, enablePush, disablePush, testPush } from '../push.js';
 
-export const APP_VERSION = '1.0.1';
+export const APP_VERSION = '1.0.2';
 
 function syncText() {
   const s = S.state.sync;
@@ -53,6 +54,10 @@ export function renderSettings(main) {
       <div class="list"><div class="list-row"><span class="grow">Tema</span>
         <span class="seg" role="group" aria-label="Tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([k, n]) =>
           `<button type="button" data-theme-set="${k}" aria-pressed="${theme === k}">${n}</button>`).join('')}</span></div></div>
+
+      <h2 class="section-title">Avisos (prueba)</h2>
+      <div class="list" id="push-box"><div class="list-row"><span class="grow muted">Comprobando…</span></div></div>
+      <p class="hint">Prueba de las notificaciones en este dispositivo. Los avisos de vencimiento llegarán en la versión 1.1.</p>
     </div><div class="settings-col">
       <h2 class="section-title">Seguridad</h2>
       <div class="list">
@@ -73,6 +78,8 @@ export function renderSettings(main) {
       <button type="button" class="btn block" data-act="logout">Cerrar sesión</button>
       <p class="hint">Tackboard ${APP_VERSION} · <a href="https://github.com/enriquezaporta/tackboard" rel="noopener noreferrer" target="_blank">Código fuente</a></p>
     </div></div></div>`;
+
+  renderPush(main);
 
   main.querySelector('#acc-inv').addEventListener('change', async (e) => {
     try { const r = await post('/api/me', { acceptInvites: e.target.checked }); await S.setUser(r.user); }
@@ -110,6 +117,48 @@ export function renderSettings(main) {
     if (act === 'delete') deleteAccount();
     if (act === 'logout') logout();
   };
+}
+
+const PUSH_TEXT = {
+  unsupported: 'Este navegador no admite notificaciones push.',
+  install: 'En iPhone y iPad los avisos solo funcionan con la app instalada: Safari → Compartir → Añadir a pantalla de inicio, y ábrela desde el icono.',
+  denied: 'Has bloqueado las notificaciones. Actívalas en los ajustes del dispositivo (en iPhone: Ajustes → Notificaciones → Tackboard).',
+  off: 'Los avisos están desactivados en este dispositivo.',
+  on: 'Este dispositivo recibe avisos.',
+};
+
+async function renderPush(main) {
+  const box = main.querySelector('#push-box');
+  if (!box) return;
+  let st;
+  try { st = await pushState(); } catch { st = 'unsupported'; }
+  if (!document.body.contains(box)) return;
+  box.innerHTML = `<div class="list-row"><span class="sync-dot ${st === 'on' ? 'ok' : st === 'off' ? '' : 'error'}"></span>
+      <span class="grow">${esc(PUSH_TEXT[st])}</span></div>
+    ${st === 'off' ? `<div class="list-row"><button type="button" class="btn primary block" data-push="on">Activar en este dispositivo</button></div>` : ''}
+    ${st === 'on' ? `<div class="list-row"><button type="button" class="btn primary grow" data-push="test">Enviar aviso de prueba</button>
+      <button type="button" class="btn" data-push="off">Desactivar</button></div>` : ''}`;
+  box.querySelectorAll('[data-push]').forEach((b) => b.addEventListener('click', async () => {
+    b.disabled = true;
+    try {
+      if (b.dataset.push === 'on') {
+        const r = await enablePush();
+        toast(r === 'granted' ? 'Avisos activados' : 'No se ha dado permiso para las notificaciones');
+      } else if (b.dataset.push === 'off') {
+        await disablePush();
+        toast('Avisos desactivados en este dispositivo');
+      } else {
+        const r = await testPush();
+        const ok = r.results.filter((x) => x.status >= 200 && x.status < 300).length;
+        if (!r.sent) toast('No hay dispositivos con avisos activados.');
+        else if (ok === r.sent) toast(`Enviado a ${ok === 1 ? '1 dispositivo' : `${ok} dispositivos`}. Debería llegar en unos segundos.`);
+        else toast(`Respuesta del servicio: ${r.results.map((x) => `${x.service} ${x.status || 'sin conexión'}`).join(', ')}`);
+      }
+    } catch (err) {
+      toast(err?.code ? errorText(err) : `No se pudo: ${err?.message || err}`);
+    }
+    renderPush(main);
+  }));
 }
 
 function changePassword() {

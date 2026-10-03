@@ -14,7 +14,7 @@ CADDY_VERSION=2.10.2
 
 echo "==> Paquetes"
 apt-get update -qq
-apt-get install -y -qq python3 curl ca-certificates sqlite3 >/dev/null
+apt-get install -y -qq python3 python3-cryptography curl ca-certificates sqlite3 >/dev/null
 
 need_caddy=1
 if command -v caddy >/dev/null; then

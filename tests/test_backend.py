@@ -460,6 +460,123 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(codes[0], 401)
         self.assertIn(429, codes)
 
+    # ---------------------------------------------------------------- avisos
+
+    def make_device(self):
+        """Simula un navegador: claves del dispositivo como las genera PushManager.subscribe()."""
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        key = ec.generate_private_key(ec.SECP256R1())
+        pub = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        auth = os.urandom(16)
+        return key, {"endpoint": "https://web.push.apple.com/QGuQyavXutnMH%s" % os.urandom(4).hex(),
+                     "keys": {"p256dh": server.b64u(pub), "auth": server.b64u(auth)}}
+
+    def decrypt(self, key, sub, body):
+        """Descifrado de referencia del lado del dispositivo (RFC 8291) para comprobar el cifrado."""
+        import hashlib, hmac as hm
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+        salt, rs, idlen = body[:16], int.from_bytes(body[16:20], "big"), body[20]
+        as_public = body[21:21 + idlen]
+        self.assertEqual(rs, 4096)
+        ua_public = key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+        ecdh = key.exchange(ec.ECDH(), ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), as_public))
+        H = lambda k, d: hm.new(k, d, hashlib.sha256).digest()
+        ikm = H(H(server.b64u_dec(sub["keys"]["auth"]), ecdh), b"WebPush: info\x00" + ua_public + as_public + b"\x01")
+        prk = H(salt, ikm)
+        plain = AESGCM(H(prk, b"Content-Encoding: aes128gcm\x00\x01")[:16]).decrypt(
+            H(prk, b"Content-Encoding: nonce\x00\x01")[:12], body[21 + idlen:], None)
+        self.assertEqual(plain[-1], 2)
+        return json.loads(plain[:-1])
+
+    def test_push_encryption_matches_reference(self):
+        key, sub = self.make_device()
+        body = server.encrypt_push(b'{"title":"hola"}', sub["keys"]["p256dh"], sub["keys"]["auth"])
+        self.assertEqual(self.decrypt(key, sub, body), {"title": "hola"})
+        # Comprobación cruzada con la implementación de referencia http_ece, si está disponible.
+        try:
+            import http_ece
+        except ImportError:
+            return
+        self.assertEqual(http_ece.decrypt(body, private_key=key, auth_secret=server.b64u_dec(sub["keys"]["auth"]),
+                                          version="aes128gcm"), b'{"title":"hola"}')
+
+    def test_push_vapid_signature(self):
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+        v = server.Vapid(self.store)
+        hdr = v.header("https://web.push.apple.com/abc", "mailto:yo@example.com")
+        t = hdr.split("t=")[1].split(",")[0]
+        k = hdr.split("k=")[1]
+        self.assertEqual(k, v.public)
+        head, claims, sig = t.split(".")
+        c = json.loads(server.b64u_dec(claims))
+        self.assertEqual(c["aud"], "https://web.push.apple.com")
+        self.assertEqual(c["sub"], "mailto:yo@example.com")
+        raw = server.b64u_dec(sig)
+        der = encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big"))
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), v.public_raw).verify(
+            der, ("%s.%s" % (head, claims)).encode(), ec.ECDSA(hashes.SHA256()))
+        # La clave se conserva entre reinicios.
+        self.assertEqual(server.Vapid(self.store).public, v.public)
+
+    def test_push_subscribe_and_test(self):
+        a, b = self.user(), self.user()
+        st, r = a.get("/api/push/key")
+        self.assertEqual(st, 200)
+        self.assertEqual(len(server.b64u_dec(r["publicKey"])), 65)
+        key, sub = self.make_device()
+        # Solo servicios de avisos conocidos (nada de direcciones internas).
+        bad = dict(sub, endpoint="https://192.168.1.20:8006/x")
+        self.assertEqual(a.post("/api/push/subscribe", bad)[0], 400)
+        self.assertEqual(a.post("/api/push/subscribe", dict(sub, keys={"p256dh": "AAAA", "auth": "BBBB"}))[0], 400)
+        self.assertEqual(a.post("/api/push/subscribe", sub)[0], 200)
+
+        sent = []
+
+        class FakeRes:
+            status = 201
+            def __enter__(self): return self
+            def __exit__(self, *e): return False
+
+        def opener(req, timeout=10):
+            sent.append(req)
+            return FakeRes()
+        server.PUSH_TEST.clear()
+        self.srv.RequestHandlerClass.app.push_opener = opener
+        try:
+            st, r = a.post("/api/push/test")
+            self.assertEqual(st, 200, r)
+            self.assertEqual(r["results"], [{"service": "web.push.apple.com", "status": 201}])
+            req = sent[0]
+            self.assertEqual(req.get_header("Content-encoding"), "aes128gcm")
+            self.assertTrue(req.get_header("Authorization").startswith("vapid t="))
+            payload = self.decrypt(key, sub, req.data)
+            self.assertEqual(payload["title"], "Tackboard")
+            # b no recibe los avisos de a.
+            self.assertEqual(b.post("/api/push/test")[1]["sent"], 0)
+            # Un dispositivo que ya no existe (410) se olvida.
+            FakeRes.status = 410
+            def gone(req, timeout=10):
+                import urllib.error
+                raise urllib.error.HTTPError(req.full_url, 410, "Gone", {}, None)
+            self.srv.RequestHandlerClass.app.push_opener = gone
+            a.post("/api/push/test")
+            with self.store.lock:
+                self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs")[0], 0)
+        finally:
+            self.srv.RequestHandlerClass.app.push_opener = None
+        # Darse de baja y borrar la cuenta limpian las suscripciones.
+        self.assertEqual(a.post("/api/push/subscribe", sub)[0], 200)
+        self.assertEqual(a.post("/api/push/unsubscribe", {"endpoint": sub["endpoint"]})[0], 200)
+        a.post("/api/push/subscribe", sub)
+        a.post("/api/me/delete", {"password": "secreto123"})
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs")[0], 0)
+
     def test_unread_body_closes_connection(self):
         """Un cuerpo no leído no debe interpretarse como la siguiente petición (respuestas cruzadas)."""
         import socket

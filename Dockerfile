@@ -1,7 +1,7 @@
 # Tackboard: app, backend y Caddy en una sola imagen pequeña.
 FROM caddy:2-alpine
 
-RUN apk add --no-cache python3 tini libcap \
+RUN apk add --no-cache python3 py3-cryptography tini libcap \
  && setcap -r /usr/bin/caddy \
  && apk del libcap \
  && addgroup -S tackboard && adduser -S -D -H -G tackboard tackboard \

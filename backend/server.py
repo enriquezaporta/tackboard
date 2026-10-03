@@ -29,6 +29,13 @@ Endpoints. Todos salvo health, legal, register, login y recover piden "Authoriza
   GET    /api/invitations                       invitaciones recibidas pendientes
   POST   /api/invitations/<boardId> {accept}    aceptar o rechazar
 
+  GET  /api/push/key                            clave pública VAPID para suscribirse a avisos
+  POST /api/push/subscribe   {endpoint, keys:{p256dh, auth}}
+  POST /api/push/unsubscribe {endpoint}
+  POST /api/push/test                           envía un aviso de prueba a los dispositivos del usuario
+
+Los avisos (Web Push) necesitan el paquete python3-cryptography. Sin él, el resto funciona igual.
+
 Un "record" es {id, kind: board|column|card, boardId, updatedAt, deleted?, data}.
 
 Permisos dentro de un tablero:
@@ -55,7 +62,7 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 POLICY_VERSION = "2026-10"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")
@@ -160,6 +167,22 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS records_board_ts ON records(board_id, server_ts);
 CREATE INDEX IF NOT EXISTS records_ts ON records(server_ts);
+-- Suscripciones a avisos push (una por dispositivo).
+CREATE TABLE IF NOT EXISTS push_subs (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_ok INTEGER
+);
+CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id);
+-- Ajustes internos (claves VAPID).
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 -- Identificadores de tableros borrados: impiden que un cliente desfasado los vuelva a crear.
 CREATE TABLE IF NOT EXISTS deleted_boards (
   id TEXT PRIMARY KEY,
@@ -469,6 +492,121 @@ CLEANERS = {"board": clean_board, "column": clean_column, "card": clean_card}
 
 
 # ----------------------------------------------------------------------------------------------------
+# Avisos push (Web Push: RFC 8030, cifrado RFC 8291, identificación VAPID RFC 8292)
+# ----------------------------------------------------------------------------------------------------
+
+try:  # opcional: sin la librería, los avisos quedan desactivados
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    PUSH_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    PUSH_AVAILABLE = False
+
+# Solo se envían avisos a los servicios de los navegadores conocidos (evita usar el servidor para
+# hacer peticiones a direcciones arbitrarias).
+PUSH_HOSTS = re.compile(
+    r"^(web\.push\.apple\.com|[a-z0-9.-]+\.push\.apple\.com|fcm\.googleapis\.com|"
+    r"updates\.push\.services\.mozilla\.com|[a-z0-9.-]+\.notify\.windows\.com)$")
+MAX_SUBS_PER_USER = 10
+PUSH_TEST = RateLimiter(5, 60)
+
+
+def b64u(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64u_dec(s):
+    s = str(s)
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _hmac(key, data):
+    return hmac.new(key, data, hashlib.sha256).digest()
+
+
+class Vapid:
+    """Par de claves P-256 de esta instalación. Se crea la primera vez y se guarda en la base de datos."""
+
+    def __init__(self, store):
+        with store.lock:
+            row = store.one("SELECT value FROM settings WHERE key='vapid_private'")
+            if row:
+                self.key = serialization.load_pem_private_key(row["value"].encode(), password=None)
+            else:
+                self.key = ec.generate_private_key(ec.SECP256R1())
+                pem = self.key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                             serialization.NoEncryption()).decode()
+                store.x("INSERT INTO settings(key,value) VALUES('vapid_private',?)", (pem,))
+        self.public_raw = self.key.public_key().public_bytes(serialization.Encoding.X962,
+                                                             serialization.PublicFormat.UncompressedPoint)
+        self.public = b64u(self.public_raw)
+
+    def header(self, endpoint, subject):
+        u = urlparse(endpoint)
+        claims = {"aud": "%s://%s" % (u.scheme, u.netloc), "exp": now() + 12 * 3600, "sub": subject}
+        signing = (b64u(json.dumps({"typ": "JWT", "alg": "ES256"}, separators=(",", ":")).encode()) + "." +
+                   b64u(json.dumps(claims, separators=(",", ":")).encode()))
+        r, s_ = decode_dss_signature(self.key.sign(signing.encode(), ec.ECDSA(hashes.SHA256())))
+        jwt = signing + "." + b64u(r.to_bytes(32, "big") + s_.to_bytes(32, "big"))
+        return "vapid t=%s, k=%s" % (jwt, self.public)
+
+
+def encrypt_push(payload, p256dh, auth):
+    """Cifra el contenido para un dispositivo (aes128gcm, un solo registro)."""
+    ua_public = b64u_dec(p256dh)
+    auth_secret = b64u_dec(auth)
+    ua_key = ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), ua_public)
+    as_key = ec.generate_private_key(ec.SECP256R1())
+    as_public = as_key.public_key().public_bytes(serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    ecdh = as_key.exchange(ec.ECDH(), ua_key)
+    prk_key = _hmac(auth_secret, ecdh)
+    ikm = _hmac(prk_key, b"WebPush: info\x00" + ua_public + as_public + b"\x01")
+    salt = secrets.token_bytes(16)
+    prk = _hmac(salt, ikm)
+    cek = _hmac(prk, b"Content-Encoding: aes128gcm\x00\x01")[:16]
+    nonce = _hmac(prk, b"Content-Encoding: nonce\x00\x01")[:12]
+    body = AESGCM(cek).encrypt(nonce, payload + b"\x02", None)
+    return salt + (4096).to_bytes(4, "big") + bytes([len(as_public)]) + as_public + body
+
+
+def send_push(vapid, sub, payload, subject, ttl=3600, urgency="normal", opener=None):
+    """Envía un aviso. Devuelve el código HTTP del servicio (201 = aceptado; 404/410 = suscripción caducada)."""
+    import urllib.error
+    import urllib.request
+    data = encrypt_push(json.dumps(payload, ensure_ascii=False).encode(), sub["p256dh"], sub["auth"])
+    req = urllib.request.Request(sub["endpoint"], data=data, method="POST", headers={
+        "TTL": str(ttl), "Urgency": urgency, "Content-Encoding": "aes128gcm",
+        "Content-Type": "application/octet-stream", "Authorization": vapid.header(sub["endpoint"], subject)})
+    try:
+        with (opener or urllib.request.urlopen)(req, timeout=10) as res:
+            return res.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except Exception:
+        return 0
+
+
+def valid_subscription(body):
+    endpoint = body.get("endpoint")
+    keys = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+    p256dh, auth = keys.get("p256dh"), keys.get("auth")
+    if not isinstance(endpoint, str) or len(endpoint) > 1024 or not endpoint.startswith("https://"):
+        raise ApiError(400, "push_endpoint")
+    host = (urlparse(endpoint).hostname or "").lower()
+    if not PUSH_HOSTS.match(host):
+        raise ApiError(400, "push_endpoint")
+    try:
+        if len(b64u_dec(p256dh)) != 65 or len(b64u_dec(auth)) != 16:
+            raise ValueError
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), b64u_dec(p256dh))
+    except Exception:
+        raise ApiError(400, "push_keys")
+    return endpoint, p256dh, auth
+
+
+# ----------------------------------------------------------------------------------------------------
 # Lógica
 # ----------------------------------------------------------------------------------------------------
 
@@ -497,8 +635,69 @@ def record_json(r):
     return out
 
 
-class App:
+class PushApi:
+    """Parte de App dedicada a los avisos."""
+
+    def vapid(self):
+        if not PUSH_AVAILABLE:
+            raise ApiError(503, "push_unavailable")
+        if self._vapid is None:
+            self._vapid = Vapid(self.s)
+        return self._vapid
+
+    def push_subject(self):
+        contact = os.environ.get("TB_OPERATOR_CONTACT", "").strip()
+        if re.match(r"^[^@\s]+@[^@\s]+\.[a-z]{2,}$", contact, re.I):
+            return "mailto:" + contact
+        return "https://github.com/enriquezaporta/tackboard"
+
+    def push_key(self, u):
+        return {"publicKey": self.vapid().public}
+
+    def push_subscribe(self, u, body):
+        self.vapid()
+        endpoint, p256dh, auth = valid_subscription(body)
+        with self.s.lock:
+            # Si el mismo dispositivo estaba con otra cuenta (cambio de usuario), pasa a esta.
+            self.s.x("DELETE FROM push_subs WHERE endpoint=?", (endpoint,))
+            n = self.s.one("SELECT COUNT(*) FROM push_subs WHERE user_id=?", (u["id"],))[0]
+            if n >= MAX_SUBS_PER_USER:  # se olvida el dispositivo más antiguo
+                self.s.x("DELETE FROM push_subs WHERE id=(SELECT id FROM push_subs WHERE user_id=? ORDER BY created_at, id LIMIT 1)",
+                         (u["id"],))
+            self.s.x("INSERT INTO push_subs(user_id,endpoint,p256dh,auth,created_at) VALUES(?,?,?,?,?)",
+                     (u["id"], endpoint, p256dh, auth, now()))
+        return {"ok": True}
+
+    def push_unsubscribe(self, u, body):
+        endpoint = body.get("endpoint")
+        with self.s.lock:
+            if isinstance(endpoint, str):
+                self.s.x("DELETE FROM push_subs WHERE user_id=? AND endpoint=?", (u["id"], endpoint))
+        return {"ok": True}
+
+    def push_test(self, u):
+        vapid = self.vapid()
+        if not PUSH_TEST.hit(u["id"]):
+            raise ApiError(429, "rate")
+        with self.s.lock:
+            subs = [dict(r) for r in self.s.q("SELECT * FROM push_subs WHERE user_id=?", (u["id"],))]
+        results = []
+        for sub in subs:
+            status = send_push(vapid, sub, {"title": "Tackboard", "body": "Aviso de prueba: las notificaciones funcionan.",
+                                            "tag": "tackboard-test", "url": "/#/ajustes"},
+                               self.push_subject(), ttl=600, urgency="high", opener=getattr(self, "push_opener", None))
+            results.append({"service": urlparse(sub["endpoint"]).hostname, "status": status})
+            with self.s.lock:
+                if status in (404, 410):
+                    self.s.x("DELETE FROM push_subs WHERE id=?", (sub["id"],))
+                elif 200 <= status < 300:
+                    self.s.x("UPDATE push_subs SET last_ok=? WHERE id=?", (now(), sub["id"]))
+        return {"sent": len(subs), "results": results}
+
+
+class App(PushApi):
     def __init__(self, store):
+        self._vapid = None
         self.s = store
 
     # ---- utilidades -------------------------------------------------------------------------------
@@ -750,6 +949,8 @@ class App:
                 for r in self.s.q("SELECT created_at,last_used FROM tokens WHERE user_id=?", (u["id"],))
             ]
             invitations = self.invitations(u["id"])
+            push = [{"service": urlparse(r["endpoint"]).hostname, "createdAt": r["created_at"], "lastOk": r["last_ok"]}
+                    for r in self.s.q("SELECT endpoint, created_at, last_ok FROM push_subs WHERE user_id=?", (u["id"],))]
         return {
             "app": "Tackboard",
             "exportedAt": now(),
@@ -759,6 +960,7 @@ class App:
             "records": records,
             "invitationsReceived": invitations,
             "sessions": sessions,
+            "pushDevices": push,
         }
 
     # ---- sincronización ---------------------------------------------------------------------------
@@ -1060,6 +1262,7 @@ def delete_user(store, uid):
     store.x("DELETE FROM members WHERE user_id=?", (uid,))
     store.x("UPDATE members SET invited_by=NULL WHERE invited_by=?", (uid,))
     store.x("DELETE FROM tokens WHERE user_id=?", (uid,))
+    store.x("DELETE FROM push_subs WHERE user_id=?", (uid,))
     store.x("DELETE FROM users WHERE id=?", (uid,))
 
 
@@ -1175,6 +1378,15 @@ class Handler(BaseHTTPRequestHandler):
                 inv = app.invitations(u["id"])
             return self.send_json(200, {"invitations": inv})
 
+        if path.startswith("/api/push/"):
+            if method == "GET" and path == "/api/push/key":
+                return self.send_json(200, app.push_key(u))
+            if method == "POST" and path == "/api/push/subscribe":
+                return self.send_json(200, app.push_subscribe(u, body))
+            if method == "POST" and path == "/api/push/unsubscribe":
+                return self.send_json(200, app.push_unsubscribe(u, body))
+            if method == "POST" and path == "/api/push/test":
+                return self.send_json(200, app.push_test(u))
         m = ROUTE_INVITE.match(path)
         if m and method == "POST":
             return self.send_json(200, app.answer_invitation(u, m.group(1), body))

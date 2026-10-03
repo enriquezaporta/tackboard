@@ -114,6 +114,7 @@ Además:
 | `GET`/`POST /api/boards/<id>/members` | Miembros e invitar |
 | `POST`/`DELETE /api/boards/<id>/members/<usuario>` | Cambiar permiso / quitar o salir |
 | `GET /api/invitations`, `POST /api/invitations/<id>` | Invitaciones recibidas, aceptar o rechazar |
+| `GET /api/push/key`, `POST /api/push/subscribe`, `/unsubscribe`, `/test` | Avisos: clave VAPID, suscripción del dispositivo y aviso de prueba |
 
 Todo salvo `health`, `legal`, `register`, `login` y `recover` necesita `Authorization: Bearer <token>`.
 
@@ -131,7 +132,7 @@ Todo salvo `health`, `legal`, `register`, `login` y `recover` necesita `Authoriz
 
 ## Decisiones
 
-- **Sin dependencias** en la app y en el servidor. No hay nada que actualizar por seguridad salvo Python y Caddy, y cualquiera puede leer todo el código.
+- **Sin dependencias** en la app y en el servidor, salvo `python3-cryptography` para cifrar los avisos (opcional). No hay nada que actualizar por seguridad salvo Python y Caddy, y cualquiera puede leer todo el código.
 - **Offline-first**: la app debe responder al instante, haya o no conexión.
 - **Sin correo**: menos datos personales. La recuperación se hace con un código que solo tiene el usuario.
 - **Registros genéricos**: un único mecanismo de sincronización y permisos para tableros, columnas y tarjetas.

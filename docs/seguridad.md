@@ -66,6 +66,14 @@ proxy de confianza (`tackboard-admin proxy`).
 - **Sin terceros**: ni CDN ni fuentes externas; las fuentes van incluidas.
 - **Sin cookies**: el token va en la cabecera `Authorization`, así que no hay CSRF.
 
+## Avisos
+
+- Cada aviso va cifrado para el dispositivo (RFC 8291) y firmado con la clave VAPID de la instalación (RFC 8292),
+  que se genera la primera vez y se guarda en la base de datos.
+- Solo se aceptan suscripciones de los servicios de notificaciones conocidos (Apple, Google, Mozilla, Microsoft):
+  el servidor no puede usarse para hacer peticiones a otras direcciones.
+- Las suscripciones caducadas (respuesta 404/410 del servicio) se borran solas. Máximo 10 dispositivos por cuenta.
+
 ## Servidor
 
 - **Escucha** solo en `127.0.0.1`, detrás de Caddy.
