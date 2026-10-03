@@ -1,0 +1,3 @@
+#!/bin/sh
+# Administración dentro del contenedor:  docker exec -it tackboard tackboard-admin users
+exec python3 /opt/tackboard/server.py admin "$@"

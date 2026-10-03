@@ -1,0 +1,64 @@
+# Gestionado por Tackboard (deploy/install.sh no lo sobrescribe si lo has modificado).
+# Tackboard detrás de Caddy: sirve la app, pasa /api/* al backend y pone las cabeceras de seguridad.
+# En un contenedor del homelab escucha en HTTP (el HTTPS lo pone el proxy de delante).
+# Si lo expones directamente, cambia ":{$TB_HTTP_PORT:80}" por tu dominio y Caddy sacará el certificado solo.
+{
+	admin off
+	servers {
+		# IP real del cliente para los límites de intentos. Solo se cree la cabecera X-Forwarded-For cuando la
+		# petición llega desde estos proxies. Por defecto, ninguno: pon la IP de tu proxy inverso con
+		#   tackboard-admin proxy 192.0.2.10        (o la variable TB_TRUSTED_PROXIES en Docker)
+		trusted_proxies static {$TB_TRUSTED_PROXIES:127.0.0.1/32}
+		trusted_proxies_strict
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 2m
+		}
+	}
+}
+
+:{$TB_HTTP_PORT:80} {
+	root * {$TB_WEB_ROOT:/srv/tackboard}
+	encode zstd gzip
+
+	header {
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		-Server
+	}
+
+	# Tamaño máximo de las peticiones: 8 MB para sincronizar, 256 KB para el resto.
+	request_body /api/sync {
+		max_size 8MB
+	}
+	@notsync not path /api/sync
+	request_body @notsync {
+		max_size 256KB
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:{$TB_API_PORT:8000} {
+			header_up X-Real-IP {client_ip}
+			# Caddy recibe el cuerpo entero antes de pasarlo: una conexión lenta no ocupa el backend.
+			request_buffers 8MB
+			# Una conexión por petición hacia el backend: más simple y sin estado compartido entre usuarios.
+			transport http {
+				keepalive off
+			}
+		}
+	}
+
+	# Que los dispositivos comprueben siempre si hay versión nueva.
+	@nocache path / /index.html /sw.js /manifest.webmanifest /privacy.html /terms.html
+	header @nocache Cache-Control "no-cache"
+
+	handle {
+		file_server
+	}
+}

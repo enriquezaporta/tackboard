@@ -1,0 +1,34 @@
+# Despliegue con Docker:  docker compose up -d   ->  http://localhost:8080
+# Ponle delante un proxy con HTTPS (la app lo necesita para instalarse y funcionar sin conexión).
+services:
+  tackboard:
+    image: ghcr.io/enriquezaporta/tackboard:latest
+    # Para construirla tú en vez de descargarla:  docker compose build
+    build: .
+    container_name: tackboard
+    restart: unless-stopped
+    ports:
+      # Solo desde este equipo. Para la red local, quita "127.0.0.1:" (y pon un proxy con HTTPS delante).
+      - "127.0.0.1:8080:8080"
+    environment:
+      # Quién responde de los datos de esta instalación (aparece en la política de privacidad).
+      TB_OPERATOR_NAME: "Tu nombre"
+      TB_OPERATOR_CONTACT: "tu-correo@ejemplo.com"
+      # 1 = cualquiera puede crear cuenta; 0 = cerrado (créalas con tackboard-admin adduser).
+      TB_ALLOW_SIGNUP: "1"
+      # Proxies de los que se acepta la IP real del cliente (límites de intentos). El puerto solo escucha en
+      # 127.0.0.1, así que las peticiones llegan a través de la pasarela de Docker y de tu proxy en este equipo.
+      # Si cambias el puerto a toda la red, pon aquí SOLO la IP de tu proxy inverso.
+      TB_TRUSTED_PROXIES: "172.16.0.0/12"
+    volumes:
+      - tackboard-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  tackboard-data:

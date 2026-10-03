@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# Administración de Tackboard (en el servidor, como root).
+#   tackboard-admin users                     usuarios y tableros
+#   tackboard-admin adduser <usuario> [nombre]
+#   tackboard-admin passwd <usuario>          contraseña nueva aleatoria (cierra sus sesiones)
+#   tackboard-admin disable|enable <usuario>  desactivar o reactivar una cuenta
+#   tackboard-admin deluser <usuario>         borrar usuario y todos sus datos
+#   tackboard-admin signup on|off             abrir o cerrar el registro desde la app
+#   tackboard-admin operator "Nombre" "contacto"   responsable que aparece en la política de privacidad
+#   tackboard-admin proxy <ip> [ip…]|none     proxies inversos de confianza (IP real de los clientes)
+#   tackboard-admin backup [carpeta]          copia consistente de la base de datos
+set -euo pipefail
+
+CONF=/etc/default/tackboard-api
+CADDY_CONF=/etc/default/tackboard-caddy
+DB=/var/lib/tackboard/tackboard.db
+
+set_var() {  # set_var FICHERO CLAVE valor  -> escribe CLAVE="valor" sin tocar el resto (formato de systemd)
+  local file="$1" key="$2" val="$3"
+  val=$(printf '%s' "$val" | tr -d '\000-\037')       # sin saltos de línea ni controles
+  val=${val//\\/\\\\}; val=${val//\"/\\\"}
+  touch "$file"; chmod 640 "$file"
+  local tmp; tmp=$(mktemp)
+  grep -v "^${key}=" "$file" > "$tmp" || true
+  printf '%s="%s"\n' "$key" "$val" >> "$tmp"
+  cat "$tmp" > "$file"; rm -f "$tmp"
+}
+
+run_py() {
+  runuser -u tackboard -- env TB_DB="$DB" python3 /opt/tackboard-api/server.py admin "$@"
+}
+
+case "${1:-}" in
+  signup)
+    case "${2:-}" in
+      on)  set_var "$CONF" TB_ALLOW_SIGNUP 1 ;;
+      off) set_var "$CONF" TB_ALLOW_SIGNUP 0 ;;
+      *)   echo "Uso: tackboard-admin signup on|off"; exit 1 ;;
+    esac
+    systemctl restart tackboard-api
+    echo "Registro ${2}."
+    ;;
+  operator)
+    [ $# -eq 3 ] || { echo 'Uso: tackboard-admin operator "Nombre" "contacto"'; exit 1; }
+    set_var "$CONF" TB_OPERATOR_NAME "$2"
+    set_var "$CONF" TB_OPERATOR_CONTACT "$3"
+    systemctl restart tackboard-api
+    echo "Responsable actualizado."
+    ;;
+  proxy)
+    shift
+    [ $# -ge 1 ] || { echo "Uso: tackboard-admin proxy <ip> [ip…] | none"; exit 1; }
+    if [ "$1" = "none" ]; then list="127.0.0.1/32"; else
+      for ip in "$@"; do
+        [[ "$ip" =~ ^[0-9a-fA-F:.]+(/[0-9]{1,3})?$ ]] || { echo "IP no válida: $ip"; exit 1; }
+      done
+      list="$*"
+    fi
+    set_var "$CADDY_CONF" TB_TRUSTED_PROXIES "$list"
+    systemctl restart caddy
+    echo "Proxies de confianza: $list"
+    ;;
+  backup)
+    DEST="${2:-/var/backups/tackboard}"
+    install -d -m 700 "$DEST"
+    F="$DEST/tackboard-$(date +%Y%m%d-%H%M%S).db"
+    python3 - "$DB" "$F" <<'PY'
+import sqlite3, sys
+src = sqlite3.connect(sys.argv[1]); dst = sqlite3.connect(sys.argv[2])
+with dst: src.backup(dst)
+PY
+    chmod 600 "$F"
+    echo "Copia: $F"
+    ;;
+  users|adduser|passwd|disable|enable|deluser)
+    run_py "$@"
+    ;;
+  *)
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+    exit 1
+    ;;
+esac

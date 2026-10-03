@@ -1,0 +1,48 @@
+[Unit]
+Description=Tackboard - backend
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/tackboard-api/server.py
+Environment=TB_DB=/var/lib/tackboard/tackboard.db
+Environment=TB_ALLOW_SIGNUP=1
+Environment=PYTHONUNBUFFERED=1
+# Ajustes de esta instalación: responsable (política de privacidad) y registro abierto o cerrado.
+EnvironmentFile=-/etc/default/tackboard-api
+Restart=on-failure
+RestartSec=3
+User=tackboard
+Group=tackboard
+StateDirectory=tackboard
+StateDirectoryMode=0750
+UMask=0077
+MemoryMax=512M
+
+# Endurecimiento: el servicio solo puede escribir en su carpeta de datos y no tiene privilegios.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+PrivateDevices=yes
+ProtectHostname=yes
+ProtectClock=yes
+ProtectKernelLogs=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

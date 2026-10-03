@@ -1,0 +1,16 @@
+{
+  "name": "Tackboard",
+  "short_name": "Tackboard",
+  "description": "Tableros Kanban, calendario y tareas compartidas.",
+  "lang": "es",
+  "start_url": "./#/hoy",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#F3F4F1",
+  "theme_color": "#0E6B62",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
