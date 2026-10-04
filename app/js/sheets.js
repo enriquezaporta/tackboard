@@ -7,6 +7,13 @@ import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, p
 const PRIOS = [['', 'Sin prioridad'], ['low', 'Baja'], ['medium', 'Media'], ['high', 'Alta']];
 export const PRIO_NAME = { low: 'Baja', medium: 'Media', high: 'Alta' };
 
+/** Muestra u oculta el rótulo de un campo de hora según esté vacío o no. */
+function bindTimeField(input) {
+  const upd = () => input.parentElement.classList.toggle('is-empty', !input.value);
+  input.addEventListener('input', upd);
+  input.addEventListener('change', upd);
+}
+
 function colorPicker(name, value) {
   return `<div class="color-picks" role="radiogroup" aria-label="Color">${COLORS.map((c, i) =>
     `<button type="button" role="radio" data-c="${c}" data-pick="${name}" data-value="${c}" aria-pressed="${c === value}" aria-checked="${c === value}" aria-label="${COLOR_NAMES[i]}"></button>`).join('')}</div>`;
@@ -73,7 +80,9 @@ function renderCard(el, card, sheet) {
           `<option value="${esc(c.id)}" ${c.id === d.columnId ? 'selected' : ''}>${esc(c.data.name)}</option>`).join('')}</select></span></div>
       <div class="prop"><span class="k">Vence</span><span class="v">
         <input id="c-due" class="input" type="date" value="${esc(d.due)}" aria-label="Fecha de vencimiento" ${dis}>
-        <input id="c-time" class="input" type="time" value="${esc(d.dueTime)}" aria-label="Hora" ${d.due ? '' : 'disabled'} ${dis}>
+        <span class="time-field${d.dueTime ? '' : ' is-empty'}" ${d.due ? '' : 'hidden'}>
+          <input id="c-time" class="input" type="time" value="${esc(d.dueTime)}" aria-label="Hora de vencimiento" ${d.due ? '' : 'disabled'} ${dis}>
+          <span class="time-ph" aria-hidden="true">+ Hora</span></span>
         ${d.due && !ro ? `<button type="button" class="btn sm ghost" id="c-nodue">Quitar</button>` : ''}</span></div>
       <div class="prop"><span class="k">Avisos</span><span class="v">
         ${d.due ? `<span class="chips">${REMINDERS.map(([k, n]) => `<button type="button" class="chip" data-rem="${k}"
@@ -140,9 +149,11 @@ function renderCard(el, card, sheet) {
   });
   el.querySelector('#c-due').addEventListener('change', (e) => {
     el.querySelector('#c-time').disabled = !e.target.value;
+    el.querySelector('.time-field').hidden = !e.target.value;
     // Se repinta para mostrar u ocultar la fila de avisos (sin perder el foco).
     patch({ due: e.target.value })?.then(() => sheet.refresh());
   });
+  bindTimeField(el.querySelector('#c-time'));
   el.querySelector('#c-time').addEventListener('change', (e) => patch({ dueTime: e.target.value })?.then(() => sheet.refresh()));
   el.querySelector('#c-nodue')?.addEventListener('click', () => patch({ due: '', dueTime: '' })?.then(() => sheet.refresh()));
   el.querySelector('#c-start').addEventListener('change', (e) => patch({ start: e.target.value }));
@@ -221,7 +232,8 @@ export function openNewTask({ due = '', boardId = null } = {}) {
         </div>
         <div class="row">
           <div class="field grow"><label for="nt-due">Vence</label><input id="nt-due" class="input" type="date" value="${esc(due)}"></div>
-          <div class="field grow"><label for="nt-time">Hora (opcional)</label><input id="nt-time" class="input" type="time"></div>
+          <div class="field grow"><label for="nt-time">Hora (opcional)</label><span class="time-field is-empty">
+            <input id="nt-time" class="input" type="time"><span class="time-ph" aria-hidden="true">Sin hora</span></span></div>
         </div>
         <button type="submit" class="btn primary block">Crear tarea</button>
       </form>`;
@@ -231,6 +243,7 @@ export function openNewTask({ due = '', boardId = null } = {}) {
         bid = e.target.value; s.refresh();
         s.el.querySelector('#nt-title').value = t; s.el.querySelector('#nt-due').value = dd;
       });
+      bindTimeField(el.querySelector('#nt-time'));
       el.querySelector('#nt').addEventListener('submit', async (e) => {
         e.preventDefault();
         const title = el.querySelector('#nt-title').value.replace(/\s+/g, ' ').trim();

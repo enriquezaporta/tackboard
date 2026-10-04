@@ -1,5 +1,10 @@
 # Cambios
 
+## 1.1.1 — 2026-10-04
+
+- La hora de vencimiento se ve en el iPhone: un campo de hora vacío salía como una caja en blanco y no se
+  distinguía. Ahora aparece rotulado («+ Hora» en la tarjeta, «Sin hora» al crear una tarea) y solo cuando hay fecha.
+
 ## 1.1.0 — 2026-10-04
 
 - **Avisos de vencimiento**: en cada tarjeta con fecha se eligen uno o varios recordatorios (2 días, 1 día, 3 h, 1 h o

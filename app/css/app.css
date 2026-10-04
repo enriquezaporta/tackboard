@@ -307,7 +307,20 @@ body.is-dragging, body.is-dragging * { cursor: grabbing !important; user-select:
 .prop > .k { width: 92px; flex: none; font-size: 14px; color: var(--muted); }
 .prop > .v { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .prop .input, .prop .select { min-height: 38px; padding: 6px 10px; font-size: 15px; border-radius: 10px; }
-.prop input[type="date"], .prop input[type="time"] { width: auto; flex: 1 1 130px; min-width: 0; }
+.prop input[type="date"] { width: auto; flex: 1 1 130px; min-width: 0; }
+/* Hora: en iPhone un campo de hora vacío se ve como una caja en blanco; se rotula encima. */
+.time-field { position: relative; display: flex; flex: 1 1 110px; min-width: 0; }
+.time-field[hidden] { display: none; }
+.field > .time-field { flex: none; }
+.time-field > input { width: 100%; min-width: 0; }
+.time-field > .time-ph { display: none; position: absolute; inset: 0; align-items: center; padding: 0 12px;
+  color: var(--accent); font-weight: 600; font-size: 15px; pointer-events: none; }
+.time-field.is-empty > .time-ph { display: flex; }
+.time-field.is-empty > input { color: transparent; }
+.time-field.is-empty > input::-webkit-datetime-edit { color: transparent; }
+.time-field.is-empty > input:focus { color: inherit; }
+.time-field.is-empty > input:focus::-webkit-datetime-edit { color: inherit; }
+.time-field.is-empty > input:focus + .time-ph { display: none; }
 .checklist-item { display: flex; align-items: center; gap: 10px; min-height: 40px; }
 .checklist-item input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--accent); flex: none; }
 .checklist-item .txt { flex: 1; min-width: 0; overflow-wrap: anywhere; }
