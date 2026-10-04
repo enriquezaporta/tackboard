@@ -234,6 +234,22 @@ docker exec tackboard python3 -c "import sqlite3;s=sqlite3.connect('/data/tackbo
 docker cp tackboard:/data/copia.db .
 ```
 
+### En Proxmox: copia diaria del contenedor
+
+Lo más cómodo es copiar el contenedor entero con una tarea programada de Proxmox. En el nodo, como root:
+
+```bash
+pvesh create /cluster/backup --id tackboard-diario --vmid 130 --schedule "03:30" \
+  --storage local --mode snapshot --compress zstd \
+  --prune-backups keep-daily=7,keep-weekly=4 --enabled 1 --notes-template "{{guestname}}"
+```
+
+- `snapshot` no para el contenedor (en ZFS o LVM-thin). SQLite queda consistente porque usa WAL.
+- Se ve y se cambia en *Centro de datos → Copia de seguridad*. Para probarla ya: `vzdump 130 --storage local --mode snapshot --compress zstd`.
+- `local` está en el mismo disco del nodo: protege de errores y de actualizaciones fallidas, no de que se rompa el
+  disco. Cuando tengas un NAS o Proxmox Backup Server, cambia `--storage` por ese almacenamiento.
+- Para restaurar: *Copia de seguridad* del contenedor → elegir la copia → *Restaurar*.
+
 Guárdalas fuera del servidor y, si salen de casa, cifradas. Para restaurar:
 
 1. Para el servicio: `systemctl stop tackboard-api`.

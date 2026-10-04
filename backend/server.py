@@ -70,7 +70,7 @@ except ImportError:  # pragma: no cover
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 POLICY_VERSION = "2026-10-04"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")

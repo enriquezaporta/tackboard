@@ -8,7 +8,7 @@ import { showRecoveryCode } from './auth.js';
 import { pushState, enablePush, disablePush, testPush } from '../push.js';
 const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 
-export const APP_VERSION = '1.2.0';
+export const APP_VERSION = '1.2.1';
 
 function syncText() {
   const s = S.state.sync;

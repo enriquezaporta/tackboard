@@ -575,6 +575,8 @@ export function openShare(boardId) {
   let data = null;
   let error = null;
   const load = async () => {
+    // Un tablero recién creado puede no haber llegado aún al servidor: primero se envía.
+    if (S.state.pending) await S.sync().catch(() => {});
     try { data = await get(`/api/boards/${encodeURIComponent(boardId)}/members`); error = null; }
     catch (e) { error = e; }
     if (document.body.contains(s.el)) s.refresh();

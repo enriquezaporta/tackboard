@@ -1,5 +1,5 @@
 // Service worker: guarda la app para que funcione sin conexión. La API nunca se guarda en caché.
-const VERSION = 'tackboard-1.2.0';
+const VERSION = 'tackboard-1.2.1';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'terms.html', 'manifest.webmanifest',
   'css/app.css', 'css/fonts.css',

@@ -1,5 +1,10 @@
 # Cambios
 
+## 1.2.1 — 2026-10-04
+
+- Compartir un tablero recién creado ya no dice «No tienes permiso»: antes de cargar los miembros se envían los cambios pendientes.
+- Documentación: copia diaria del contenedor con una tarea programada de Proxmox.
+
 ## 1.2.0 — 2026-10-04
 
 - **Tareas que se repiten**: diaria, días laborables, semanal (eligiendo días), mensual, anual y «cada N». Al completarla
