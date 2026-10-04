@@ -1,10 +1,10 @@
 // Service worker: guarda la app para que funcione sin conexión. La API nunca se guarda en caché.
-const VERSION = 'tackboard-1.3.0';
+const VERSION = 'tackboard-1.4.0';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'terms.html', 'manifest.webmanifest',
   'css/app.css', 'css/fonts.css',
   'js/main.js', 'js/push.js', 'js/pomo.js', 'js/store.js', 'js/db.js', 'js/api.js', 'js/util.js', 'js/ui.js', 'js/drag.js', 'js/sheets.js', 'js/legal.js',
-  'js/views/parts.js', 'js/views/today.js', 'js/views/board.js', 'js/views/calendar.js', 'js/views/settings.js', 'js/views/auth.js', 'js/views/pomodoro.js', 'js/views/search.js', 'js/views/focus.js', 'js/templates.js', 'js/files.js',
+  'js/views/parts.js', 'js/views/today.js', 'js/views/board.js', 'js/views/calendar.js', 'js/views/settings.js', 'js/views/auth.js', 'js/views/pomodoro.js', 'js/views/search.js', 'js/views/focus.js', 'js/templates.js', 'js/files.js', 'js/quickadd.js',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
   'fonts/ibm-plex-sans-latin-400-normal.woff2', 'fonts/ibm-plex-sans-latin-500-normal.woff2',
   'fonts/ibm-plex-sans-latin-600-normal.woff2', 'fonts/ibm-plex-sans-latin-700-normal.woff2',

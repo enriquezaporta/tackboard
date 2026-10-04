@@ -88,6 +88,40 @@ la contraseña o cerrar las demás sesiones también lo desactiva.
 
 El enlace es como una contraseña: quien lo tenga ve los títulos y fechas de tus tareas.
 
+## Alta rápida
+
+Al crear una tarea (botón **+** o *Añadir tarjeta* en una columna) puedes escribirlo todo en el título:
+
+> Pagar el IBI **viernes 18:00** **#casa** **!alta** **@lucia** **cada mes**
+
+| Escribe | Y se pone |
+|---|---|
+| `hoy`, `mañana`, `pasado mañana`, `lunes`…`domingo` (o `lun`, `mie`…), `15/11`, `3/2/2027`, `12 de octubre`, `en 3 días` | Fecha |
+| `18:00`, `9.30`, `18h`, `a las 9` | Hora (sin fecha: hoy, o mañana si ya ha pasado) |
+| `#casa` (el principio del nombre basta, sin tildes ni espacios) | Tablero |
+| `!alta`, `!media`, `!baja` o `!!!`, `!!`, `!` | Prioridad |
+| `@lucia` (usuario o nombre) | Responsable |
+| `cada día`, `cada semana`, `cada 2 semanas`, `cada mes`, `cada año`, `cada lunes`, `días laborables` | Repetición |
+
+Debajo del campo ves lo que ha reconocido. Lo que no reconoce se queda en el título.
+
+## Trabajar en equipo
+
+En los tableros compartidos:
+
+- **Responsables**: en la tarjeta, fila *Responsables*, marca a una o varias personas. Su inicial aparece en la tarjeta.
+  Quien recibe una tarea asignada por otra persona recibe un aviso.
+- **Comentarios**: al final de la tarjeta. Los escribe quien tiene permiso de escritura y los leen todos los miembros.
+  Cada uno borra los suyos; quien gestiona el tablero (*Todo* o anfitrión) puede borrar cualquiera. Los demás miembros
+  reciben un aviso. El número de comentarios aparece en la tarjeta.
+- **Actividad**: menú del tablero → *Actividad*. Quién creó, movió, completó, archivó, asignó o comentó qué, y cuándo,
+  en los últimos 90 días.
+- **Ocultar las de otros**: en *Hoy*, quita las tareas asignadas solo a otras personas.
+- En la búsqueda: filtro *Asignadas a mí* o *Sin asignar*. La búsqueda también encuentra texto de los comentarios.
+
+Los avisos de asignaciones y comentarios se pueden apagar en *Ajustes → Avisos → Asignaciones y comentarios*.
+No llegan durante el horario de silencio.
+
 ## Adjuntos
 
 En una tarjeta, **Adjuntos → Añadir**: fotos (de la cámara o la galería) o PDF.

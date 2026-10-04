@@ -1,5 +1,16 @@
 # Cambios
 
+## 1.4.0 — 2026-10-04
+
+- **Responsables**: asignar tarjetas a miembros del tablero, con su inicial en la tarjeta y aviso a quien se le asigna.
+- **Comentarios** en las tarjetas, con aviso a los demás miembros. Funcionan sin conexión, como el resto.
+- **Actividad del tablero**: quién hizo qué y cuándo, en los últimos 90 días.
+- **Alta rápida**: fecha, hora, #tablero, !prioridad, @persona y «cada semana» escritos en el título.
+- *Hoy*: «Ocultar las de otros». Búsqueda: filtro por responsable y texto de los comentarios.
+- *Ajustes → Avisos*: «Asignaciones y comentarios».
+- La política de privacidad se actualiza con comentarios, responsables y actividad (se pide aceptarla de nuevo).
+- Revisión de seguridad independiente: 2 fallos altos, 3 medios y 4 bajos, corregidos (ver docs/seguridad.md).
+
 ## 1.3.0 — 2026-10-04
 
 - **Adjuntos** en las tarjetas: fotos y PDF. Las fotos se reducen a 2048 px y pierden los metadatos (ubicación) en el

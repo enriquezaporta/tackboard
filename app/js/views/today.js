@@ -8,7 +8,12 @@ export function renderToday(main) {
   const t = todayStr();
   const week = addDays(t, 7);
   const now = parseDate(t);
-  const all = S.datedCards().filter((c) => !c.data.archived);
+  const me = S.state.user?.username;
+  const shared = S.boards().some((b) => (S.state.boardInfo.get(b.id)?.members || 1) > 1);
+  const hideOthers = shared && S.state.settings.hideOthers;
+  // «Ocultar las de otros»: fuera las tareas asignadas solo a otras personas.
+  const mine = (c) => !hideOthers || !(c.data.assignees || []).length || c.data.assignees.includes(me);
+  const all = S.datedCards().filter((c) => !c.data.archived && mine(c));
   const overdue = all.filter((c) => !c.data.done && c.data.due < t).sort(sortByDue);
   const today = all.filter((c) => c.data.due === t).sort((a, b) => (a.data.done - b.data.done) || sortByDue(a, b));
   const next = all.filter((c) => !c.data.done && c.data.due > t && c.data.due <= week).sort(sortByDue);
@@ -30,6 +35,7 @@ export function renderToday(main) {
       ${overdue.length ? `<span class="chip danger">${plural(overdue.length, 'vencida', 'vencidas')}</span>` : ''}
       <span class="chip accent">${todayOpen} para hoy</span>
       <span class="chip">${next.length} en 7 días</span>
+      ${shared ? `<button type="button" class="chip" data-act="others" aria-pressed="${!!hideOthers}">Ocultar las de otros</button>` : ''}
     </div>` : ''}
     ${!hasBoards ? `<div class="section"><div class="empty-card"><strong>Empieza creando un tablero</strong>
         <span>Un tablero agrupa las tareas de un ámbito: Casa, Trabajo, Homelab…</span>
@@ -63,5 +69,6 @@ export function renderToday(main) {
     if (act === 'new-task') openNewTask({ due: t });
     if (act === 'new-board') openNewBoard();
     if (act === 'invitations') openInvitations();
+    if (act === 'others') S.saveSettings({ hideOthers: !S.state.settings.hideOthers });
   };
 }

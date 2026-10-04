@@ -8,7 +8,7 @@ import { showRecoveryCode } from './auth.js';
 import { pushState, enablePush, disablePush, testPush } from '../push.js';
 const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 
-export const APP_VERSION = '1.3.0';
+export const APP_VERSION = '1.4.0';
 
 function syncText() {
   const s = S.state.sync;
@@ -217,6 +217,7 @@ function notifyHtml() {
       <div class="list-row"><span class="grow">Zona horaria<br><span class="hint">Para el horario de silencio y el resumen diario.</span></span>
         <span class="small muted">${esc(p.tz)}</span>
         ${deviceTz() && deviceTz() !== p.tz ? `<button type="button" class="btn sm" id="np-tz">Usar ${esc(deviceTz())}</button>` : ''}</div>
+      ${sw('np-activity', p.activityPush !== false, 'Asignaciones y comentarios', 'Cuando alguien te asigna una tarea o comenta en un tablero compartido.', dis)}
       ${sw('np-titles', p.showTitles, 'Mostrar el título de la tarea', 'Si está desactivado, el aviso solo dice «Tienes una tarea que vence…» y el título no pasa por Apple ni Google.', dis)}
     </div>
     ${boards.length ? `<div class="section-title small-title">Por tablero</div><div class="list">${boards.map((b) => `<div class="list-row">
@@ -231,6 +232,7 @@ function bindNotify(main) {
   };
   const on = (sel, fn) => main.querySelector(sel)?.addEventListener('change', fn);
   on('#np-enabled', (e) => save({ enabled: e.target.checked }));
+  on('#np-activity', (e) => save({ activityPush: e.target.checked }));
   on('#np-quiet', (e) => save({ quiet: { on: e.target.checked } }));
   on('#np-qs', (e) => e.target.value && save({ quiet: { start: e.target.value } }));
   on('#np-qe', (e) => e.target.value && save({ quiet: { end: e.target.value } }));

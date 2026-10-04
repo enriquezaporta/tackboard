@@ -9,6 +9,7 @@ export const state = {
   records: new Map(),   // id -> {id, kind, boardId, data, updatedAt, deleted, serverTs}
   roles: new Map(),     // boardId -> 'owner' | 'admin' | 'write' | 'read'
   boardInfo: new Map(), // boardId -> {members, owner}
+  people: new Map(),    // boardId -> [{username, name}] miembros activos
   invitations: 0,
   pending: 0,
   sync: { status: 'idle', lastOk: null, error: null },
@@ -21,7 +22,9 @@ let noticeFn = () => {};
 /** Avisos para la persona (cambios rechazados por el servidor, etc.). */
 export function onNotice(fn) { noticeFn = fn; }
 let emitQueued = false;
+let countCache = null;
 export function emit() {
+  countCache = null;
   if (emitQueued) return;
   emitQueued = true;
   queueMicrotask(() => { emitQueued = false; for (const fn of listeners) fn(); });
@@ -50,6 +53,24 @@ export function columnCards(columnId, { archived = false } = {}) {
   return cards((c) => c.data.columnId === columnId && !!c.data.archived === archived).sort(byPos);
 }
 export const record = (id) => { const r = state.records.get(id); return live(r) ? r : null; };
+export const people = (boardId) => state.people.get(boardId) || [];
+export const personName = (boardId, username) => people(boardId).find((p) => p.username === username)?.name || username;
+/** Comentarios de una tarjeta, del más antiguo al más nuevo. */
+export function comments(cardId) {
+  return [...state.records.values()].filter((r) => r.kind === 'comment' && live(r) && r.data.cardId === cardId)
+    .sort((a, b) => (a.data.createdAt || a.updatedAt) - (b.data.createdAt || b.updatedAt));
+}
+/** Número de comentarios de una tarjeta (se cuentan todas de una vez y se guarda hasta el siguiente cambio). */
+export function commentCount(cardId) {
+  if (!countCache) {
+    countCache = new Map();
+    for (const r of state.records.values()) if (r.kind === 'comment' && live(r)) countCache.set(r.data.cardId, (countCache.get(r.data.cardId) || 0) + 1);
+  }
+  return countCache.get(cardId) || 0;
+}
+export async function addComment(card, text) {
+  return save('comment', uid(), card.boardId, { cardId: card.id, text, author: state.user.username, createdAt: Date.now(), editedAt: null });
+}
 export const doneColumn = (boardId) => columns(boardId).find((c) => c.data.isDone) || null;
 
 /** Tarjetas con fecha, no archivadas, de tableros visibles. */
@@ -240,7 +261,8 @@ export async function createCard(boardId, columnId, fields, index = null) {
   const data = {
     columnId, title: fields.title, description: fields.description || '', start: '',
     due: fields.due || '', dueTime: fields.dueTime || '',
-    priority: '', labels: [], checklist: [], pos, done: !!col?.data.isDone, doneAt: col?.data.isDone ? Date.now() : null, archived: false,
+    priority: fields.priority || '', labels: [], checklist: [], pos, done: !!col?.data.isDone, doneAt: col?.data.isDone ? Date.now() : null, archived: false,
+    assignees: fields.assignees || [], repeat: fields.due && fields.repeat ? fields.repeat : null,
   };
   const id = uid();
   await save('card', id, boardId, data);
@@ -279,10 +301,11 @@ export async function setNotifyPrefs(patch) {
 
 // ---------- Carga y sesión ----------
 export async function load() {
-  const [records, outbox, user, roles, info, settings, cursor] = await Promise.all([
+  const [records, outbox, user, roles, info, settings, cursor, ppl] = await Promise.all([
     db.getAll('records'), db.getAll('outbox'), db.getMeta('user'), db.getMeta('roles', []),
-    db.getMeta('boardInfo', []), db.getMeta('settings', {}), db.getMeta('cursor', 0),
+    db.getMeta('boardInfo', []), db.getMeta('settings', {}), db.getMeta('cursor', 0), db.getMeta('people', []),
   ]);
+  state.people = new Map(ppl);
   state.records = new Map(records.map((r) => [r.id, r]));
   state.roles = new Map(roles);
   state.boardInfo = new Map(info);
@@ -305,7 +328,7 @@ export async function signedIn(token, user) {
     await db.delMeta('expiredUser');
   } else {
     await db.wipe();
-    state.records.clear(); state.roles.clear(); state.boardInfo.clear(); state.pending = 0; syncCursor = 0;
+    state.records.clear(); state.roles.clear(); state.boardInfo.clear(); state.people.clear(); state.pending = 0; syncCursor = 0;
     state.notify = { prefs: null, available: true };
   }
   setToken(token);
@@ -345,7 +368,7 @@ export async function sessionExpired() {
   await db.putOutbox(outbox);
   await db.setMeta('expiredUser', username);
   await db.setMeta('settings', state.settings);
-  state.records.clear(); state.roles.clear(); state.boardInfo.clear(); syncCursor = 0;
+  state.records.clear(); state.roles.clear(); state.boardInfo.clear(); state.people.clear(); syncCursor = 0;
   state.expiredUser = username;
   state.user = null;
   emit();
@@ -354,7 +377,7 @@ export async function sessionExpired() {
 export async function signOutLocal() {
   setToken(null);
   await db.wipe();
-  state.user = null; state.records.clear(); state.roles.clear(); state.boardInfo.clear();
+  state.user = null; state.records.clear(); state.roles.clear(); state.boardInfo.clear(); state.people.clear();
   state.pending = 0; state.invitations = 0; syncCursor = 0;
   state.notify = { prefs: null, available: true };
   emit();
@@ -445,6 +468,7 @@ async function applyServer(res, sent) {
   for (const id of pendingBoards) if (!roles.has(id)) roles.set(id, 'owner');
   state.roles = roles;
   state.boardInfo = new Map(res.boards.map((b) => [b.id, { members: b.members, owner: b.owner }]));
+  state.people = new Map(res.boards.map((b) => [b.id, b.people || []]));
   state.invitations = res.invitations;
   syncCursor = res.cursor;
   if (reasons.forbidden) noticeFn(`${reasons.forbidden === 1 ? 'Un cambio' : `${reasons.forbidden} cambios`} sin permiso se han deshecho.`);
@@ -452,6 +476,7 @@ async function applyServer(res, sent) {
   if (reasons.other) noticeFn(`El servidor ha rechazado ${reasons.other === 1 ? 'un cambio' : `${reasons.other} cambios`} no válidos.`);
   await db.setMeta('roles', [...state.roles]);
   await db.setMeta('boardInfo', [...state.boardInfo]);
+  await db.setMeta('people', [...state.people]);
   await db.setMeta('cursor', syncCursor);
 }
 

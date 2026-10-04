@@ -1,8 +1,9 @@
 // Lista de tableros y vista Kanban de un tablero.
 import * as S from '../store.js';
-import { esc, icon, plural, COLORS, toast, todayStr, paint } from '../util.js';
+import { esc, icon, plural, COLORS, toast, todayStr, paint, dueLabel } from '../util.js';
 import { boardCard, boardStats } from './parts.js';
 import { enableDrag } from '../drag.js';
+import { parseQuick, quickChips } from '../quickadd.js';
 import { openCard, openNewBoard, openBoardMenu, openShare, openInvitations, openColumns } from '../sheets.js';
 
 // ---------- Lista de tableros ----------
@@ -164,11 +165,15 @@ function showQuickAdd(main, boardId, columnId) {
   if (!slot) return;
   slot.innerHTML = `<form class="quick-add" data-qa>
     <label class="sr" for="qa-${esc(columnId)}">Título de la tarjeta</label>
-    <textarea id="qa-${esc(columnId)}" class="textarea" maxlength="200" placeholder="Título de la tarjeta" required></textarea>
+    <textarea id="qa-${esc(columnId)}" class="textarea" maxlength="200" placeholder="Título (prueba: «Llamar mañana 18:00 !alta»)" required></textarea>
+    <div class="qa-preview chips" aria-live="polite"></div>
     <div class="row"><button type="submit" class="btn primary grow">Añadir</button><button type="button" class="btn" data-cancel>Cancelar</button></div></form>`;
   const form = slot.querySelector('form');
   const ta = form.querySelector('textarea');
   ta.focus();
+  const ctx = () => ({ people: S.people(boardId) });
+  const preview = form.querySelector('.qa-preview');
+  ta.addEventListener('input', () => { preview.innerHTML = quickChips(parseQuick(ta.value, ctx())); });
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); }
     if (e.key === 'Escape') { e.stopPropagation(); ta.blur(); S.emit(); }
@@ -177,10 +182,12 @@ function showQuickAdd(main, boardId, columnId) {
   form.addEventListener('click', (e) => e.stopPropagation());
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const title = ta.value.replace(/\s+/g, ' ').trim();
-    if (!title) return;
+    const text = ta.value.replace(/\s+/g, ' ').trim();
+    if (!text) return;
     ta.value = '';
-    await S.createCard(boardId, columnId, { title });
+    preview.innerHTML = '';
+    const q = parseQuick(text, ctx());
+    await S.createCard(boardId, columnId, { title: q.title, due: q.due, dueTime: q.dueTime, priority: q.priority, assignees: q.assignees, repeat: q.repeat });
     // Al quitar el foco la vista se vuelve a pintar; después se reabre el formulario para seguir añadiendo.
     ta.blur();
     setTimeout(() => {

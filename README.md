@@ -34,6 +34,8 @@ instalable (PWA) que funciona sin conexión y se aloja en tu propio servidor: tu
 - **Adjuntos**: fotos (reducidas y sin metadatos de ubicación) y PDF en las tarjetas.
 - **Búsqueda** en todas las tarjetas, con filtros, y **plantillas** de tablero (incluidas y propias).
 - **Modo enfoque**: pantalla completa con la tarea y el tiempo del pomodoro.
+- **Trabajo en equipo**: responsables, comentarios con aviso y actividad del tablero.
+- **Alta rápida**: «Pagar el IBI viernes 18:00 #casa !alta» rellena fecha, hora, tablero y prioridad.
 - **Privacidad**: sin correo, sin rastreadores, sin servicios de terceros. Cada uno puede descargar sus datos o borrar su cuenta.
 
 ## Probarlo en un minuto
@@ -53,7 +55,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 | | |
 |---|---|
-| [Uso](docs/uso.md) | Tableros, tarjetas, adjuntos, búsqueda, plantillas, repetición, calendario, pomodoro, avisos, compartir y ajustes |
+| [Uso](docs/uso.md) | Tableros, tarjetas, alta rápida, equipo, adjuntos, búsqueda, plantillas, repetición, calendario, pomodoro, avisos y ajustes |
 | [Instalación](docs/instalacion.md) | Debian/Proxmox (LXC), Docker, HTTPS, cortafuegos, copias y actualizaciones |
 | [Arquitectura](docs/arquitectura.md) | Cómo funciona por dentro: datos, sincronización y permisos |
 | [Seguridad](docs/seguridad.md) | Medidas aplicadas y cómo avisar de un fallo |
@@ -68,7 +70,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 ## Hoja de ruta
 
-Ideas para más adelante: comentarios en las tarjetas, asignar tareas a miembros y vista de actividad del tablero.
+Ideas para más adelante: lo que salga de usarla.
 
 ## Licencia
 

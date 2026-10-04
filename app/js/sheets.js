@@ -4,7 +4,8 @@ import { get, post, del, errorText } from './api.js';
 import { openSheet, confirmDialog, closeSheet } from './ui.js';
 import * as T from './templates.js';
 import * as F from './files.js';
-import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS, REPEAT_FREQ, REPEAT_UNIT, DOW_ORDER, DOW_LETTER, nextDue, repeatLabel, dueLabel } from './util.js';
+import { parseQuick, quickChips } from './quickadd.js';
+import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS, REPEAT_FREQ, REPEAT_UNIT, DOW_ORDER, DOW_LETTER, nextDue, repeatLabel, dueLabel, personColor, initial, whenText } from './util.js';
 
 const PRIOS = [['', 'Sin prioridad'], ['low', 'Baja'], ['medium', 'Media'], ['high', 'Alta']];
 export const PRIO_NAME = { low: 'Baja', medium: 'Media', high: 'Alta' };
@@ -101,6 +102,54 @@ function bindRepeat(el, cardId, patch, sheet) {
   }));
 }
 
+function assigneesHtml(card, dis) {
+  const ppl = S.people(card.boardId);
+  const cur = card.data.assignees || [];
+  if (ppl.length < 2 && !cur.length) return '';
+  const me = S.state.user?.username;
+  return `<div class="prop"><span class="k">Responsables</span><span class="v"><span class="chips">${ppl.map((p) => `
+    <button type="button" class="chip person" data-asg="${esc(p.username)}" aria-pressed="${cur.includes(p.username)}" ${dis}>
+      <span class="mini-av" data-c="${personColor(p.username)}">${esc(initial(p.name || p.username))}</span>${esc(p.username === me ? 'Yo' : p.name || p.username)}</button>`).join('')}</span></span></div>`;
+}
+
+function commentsHtml(card, ro) {
+  const list = S.comments(card.id);
+  const me = S.state.user?.username;
+  const admin = S.can(card.boardId, 'admin');
+  return `<div class="row comments-head"><strong class="grow">Comentarios</strong>${list.length ? `<span class="mono small muted">${list.length}</span>` : ''}</div>
+    <div class="comments">${list.map((c) => {
+      const name = c.data.author ? S.personName(card.boardId, c.data.author) : 'Cuenta eliminada';
+      return `<div class="comment">
+        <span class="mini-av lg" data-c="${personColor(c.data.author)}">${esc(initial(name))}</span>
+        <div class="grow"><div class="comment-meta"><strong>${esc(c.data.author === me ? 'Tú' : name)}</strong>
+          <span class="muted small">${c.serverTs ? esc(whenText(c.data.createdAt || c.updatedAt)) : 'sin enviar'}${c.data.editedAt ? ' · editado' : ''}</span>
+          ${(c.data.author === me || admin) && !ro ? `<button type="button" class="icon-btn plain sm-btn" data-cdel="${esc(c.id)}" aria-label="Borrar el comentario">${icon('close', 's')}</button>` : ''}</div>
+        <div class="comment-text">${esc(c.data.text)}</div></div></div>`;
+    }).join('')}</div>
+    ${ro ? (list.length ? '' : '<p class="muted small">Sin comentarios.</p>') : `<form id="c-cm" class="comment-form">
+      <label class="sr" for="c-cm-text">Escribe un comentario</label>
+      <textarea id="c-cm-text" class="textarea" rows="2" maxlength="2000" placeholder="Escribe un comentario…"></textarea>
+      <button type="submit" class="btn">Comentar</button></form>`}`;
+}
+
+function bindComments(el, card, sheet) {
+  el.querySelector('#c-cm')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const ta = el.querySelector('#c-cm-text');
+    const text = ta.value.trim();
+    if (!text) return;
+    ta.value = '';
+    ta.blur();
+    await S.addComment(S.record(card.id), text);
+    sheet.refresh();
+  });
+  el.querySelectorAll('[data-cdel]').forEach((b) => b.addEventListener('click', async () => {
+    const ok = await confirmDialog({ title: 'Borrar comentario', text: 'Se borrará para todos los miembros del tablero.', ok: 'Borrar', danger: true });
+    if (ok) await S.remove([b.dataset.cdel]);
+    openCard(card.id);
+  }));
+}
+
 function renderCard(el, card, sheet) {
   const d = card.data;
   const b = S.board(card.boardId);
@@ -148,6 +197,7 @@ function renderCard(el, card, sheet) {
           aria-pressed="${d.labels.includes(l.id)}" ${dis}><span class="dot" data-c="${esc(l.color)}"></span>${esc(l.name || 'Sin nombre')}</button>`).join('')}</span>`
           : `<span class="muted small">El tablero no tiene etiquetas.</span>`}
         ${S.can(card.boardId, 'admin') ? `<button type="button" class="btn sm ghost" id="c-edit-labels">Editar</button>` : ''}</span></div>
+      ${assigneesHtml(card, dis)}
     </div>
 
     <div class="field"><label for="c-desc">Descripción</label>
@@ -168,6 +218,8 @@ function renderCard(el, card, sheet) {
     <div class="row att-head"><strong class="grow">Adjuntos</strong>${(d.attachments || []).length ? `<span class="mono small muted">${d.attachments.length}</span>` : ''}</div>
     ${F.attachmentsHtml(card, !ro)}
 
+    ${commentsHtml(card, ro)}
+
     ${!d.done && !d.archived ? `<button type="button" class="btn block" id="c-pomo">${icon('timer', 's')} Empezar un pomodoro con esta tarea</button>` : ''}
     ${ro ? '' : `<div class="row sheet-actions">
       <button type="button" class="btn grow" id="c-archive">${icon('archive', 's')} ${d.archived ? 'Restaurar' : 'Archivar'}</button>
@@ -178,6 +230,7 @@ function renderCard(el, card, sheet) {
   const autosize = () => { title.style.height = 'auto'; title.style.height = `${title.scrollHeight}px`; };
   autosize();
   F.fillThumbs(el);
+  bindComments(el, card, sheet);
   el.querySelectorAll('[data-att-open]').forEach((b) => b.addEventListener('click', () => F.openAttachment(card.id, b.dataset.attOpen)));
   el.querySelector('#att-input')?.addEventListener('change', async (e) => {
     const files = e.target.files;
@@ -233,6 +286,11 @@ function renderCard(el, card, sheet) {
     const cur = S.record(card.id).data.reminders || [];
     const k = btn.dataset.rem;
     patch({ reminders: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] });
+  }));
+  el.querySelectorAll('[data-asg]').forEach((btn) => btn.addEventListener('click', () => {
+    const cur = S.record(card.id).data.assignees || [];
+    const u = btn.dataset.asg;
+    patch({ assignees: cur.includes(u) ? cur.filter((x) => x !== u) : [...cur, u] });
   }));
   el.querySelectorAll('[data-label]').forEach((btn) => btn.addEventListener('click', () => {
     const cur = S.record(card.id).data.labels;
@@ -293,7 +351,9 @@ export function openNewTask({ due = '', boardId = null } = {}) {
       const firstOpen = cols.find((c) => !c.data.isDone) || cols[0];
       el.innerHTML = `<form id="nt">
         <div class="field"><label for="nt-title">Título</label>
-          <input id="nt-title" class="input" maxlength="200" required autocomplete="off" autofocus></div>
+          <input id="nt-title" class="input" maxlength="200" required autocomplete="off" autofocus placeholder="Pagar el IBI viernes 18:00 #casa !alta">
+          <div class="qa-preview chips" id="nt-parse" aria-live="polite"></div>
+          <span class="hint">Puedes escribir la fecha, la hora, <b>#tablero</b>, <b>!alta</b>, <b>@persona</b> o «cada semana» en el título.</span></div>
         <div class="row">
           <div class="field grow"><label for="nt-board">Tablero</label>
             <select id="nt-board" class="select">${writable.map((b) => `<option value="${esc(b.id)}" ${b.id === bid ? 'selected' : ''}>${esc(b.data.name)}</option>`).join('')}</select></div>
@@ -314,13 +374,29 @@ export function openNewTask({ due = '', boardId = null } = {}) {
         s.el.querySelector('#nt-title').value = t; s.el.querySelector('#nt-due').value = dd;
       });
       bindTimeField(el.querySelector('#nt-time'));
+      const ctx = () => ({ boards: writable.map((b) => ({ id: b.id, name: b.data.name })), people: S.people(bid) });
+      el.querySelector('#nt-title').addEventListener('input', (e) => {
+        el.querySelector('#nt-parse').innerHTML = quickChips(parseQuick(e.target.value, ctx()));
+      });
       el.querySelector('#nt').addEventListener('submit', async (e) => {
         e.preventDefault();
-        const title = el.querySelector('#nt-title').value.replace(/\s+/g, ' ').trim();
-        const colId = el.querySelector('#nt-col').value;
-        if (!title || !colId) return;
-        const d = el.querySelector('#nt-due').value;
-        await S.createCard(bid, colId, { title, due: d, dueTime: d ? el.querySelector('#nt-time').value : '' });
+        const text = el.querySelector('#nt-title').value.replace(/\s+/g, ' ').trim();
+        let colId = el.querySelector('#nt-col').value;
+        if (!text || !colId) return;
+        const q = parseQuick(text, ctx());
+        // Si se ha escrito #tablero, va a ese tablero (a su primera columna abierta).
+        if (q.boardId && q.boardId !== bid) {
+          bid = q.boardId;
+          const cs = S.columns(bid);
+          colId = (cs.find((c) => !c.data.isDone) || cs[0])?.id;
+          if (!colId) return;
+        }
+        // Lo escrito en el título manda sobre los campos (que pueden venir rellenos con el día elegido).
+        const d = q.due || el.querySelector('#nt-due').value;
+        const t = q.due ? q.dueTime : el.querySelector('#nt-time').value || q.dueTime;
+        const ppl = new Set(S.people(bid).map((p) => p.username));
+        await S.createCard(bid, colId, { title: q.title, due: d, dueTime: d ? t : '', priority: q.priority,
+          assignees: q.assignees.filter((u) => ppl.has(u)), repeat: q.repeat });
         await S.saveSettings({ lastBoard: bid });
         s.close();
         toast('Tarea creada');
@@ -385,6 +461,52 @@ export function openNewBoard(onCreated) {
   T.loadMine().then(() => { if (document.body.contains(s.el)) s.refresh(); });
 }
 
+const ACT = {
+  created: (t) => `creó ${t}`, moved: (t, d) => `movió ${t}${d ? ` a «${esc(d)}»` : ''}`, done: (t) => `completó ${t}`,
+  reopened: (t) => `reabrió ${t}`, archived: (t) => `archivó ${t}`, restored: (t) => `restauró ${t}`, deleted: (t) => `eliminó ${t}`,
+  due: (t, d) => (d ? `cambió la fecha de ${t} a ${esc(dueLabel(d.slice(0, 10), d.slice(11)).toLowerCase())}` : `quitó la fecha de ${t}`),
+};
+
+export function openActivity(boardId) {
+  let items = [];
+  let more = false;
+  let error = null;
+  let loading = true;
+  const load = async () => {
+    loading = true;
+    try {
+      const before = items.length ? items[items.length - 1].id : 0;
+      const r = await get(`/api/boards/${encodeURIComponent(boardId)}/activity${before ? `?before=${before}` : ''}`);
+      items = items.concat(r.items); more = r.more; error = null;
+    } catch (e) { error = e; }
+    loading = false;
+    if (document.body.contains(s.el)) s.refresh();
+  };
+  const s = openSheet({
+    title: 'Actividad',
+    render(el) {
+      if (error && !items.length) { el.innerHTML = `<div class="empty"><strong>No se puede cargar la actividad</strong>${esc(errorText(error))}</div>`; return; }
+      if (loading && !items.length) { el.innerHTML = '<p class="muted">Cargando…</p>'; return; }
+      el.innerHTML = `<p class="hint">Lo que se ha hecho en este tablero en los últimos 90 días.</p>
+        <div class="activity">${items.map((a) => {
+          const who = a.username ? a.name || a.username : 'Una cuenta eliminada';
+          const card = a.cardId && S.record(a.cardId);
+          const t = card ? `<button type="button" class="link" data-act-card="${esc(a.cardId)}">«${esc(a.title || '')}»</button>` : `«${esc(a.title || '')}»`;
+          let what;
+          if (a.kind === 'assigned') what = `asignó ${t} a ${esc((a.detail || '').split(', ').map((u) => S.personName(boardId, u)).join(', '))}`;
+          else if (a.kind === 'comment') what = `comentó en ${t}: <span class="muted">${esc(a.detail || '')}</span>`;
+          else what = (ACT[a.kind] || ((x) => x))(t, a.detail);
+          return `<div class="act-row"><span class="mini-av lg" data-c="${personColor(a.username || '?')}">${esc(initial(a.name || a.username || '?'))}</span>
+            <div class="grow"><strong>${esc(who)}</strong> ${what}<div class="small muted">${esc(whenText(a.at))}</div></div></div>`;
+        }).join('') || (error ? '' : '<p class="muted">Todavía no hay actividad.</p>')}</div>
+        ${more ? '<button type="button" class="btn block" data-more>Ver más</button>' : ''}`;
+      el.querySelector('[data-more]')?.addEventListener('click', load);
+      el.querySelectorAll('[data-act-card]').forEach((b) => b.addEventListener('click', () => openCard(b.dataset.actCard)));
+    },
+  });
+  load();
+}
+
 function openSaveTemplate(boardId) {
   const b = S.board(boardId);
   const s = openSheet({
@@ -426,6 +548,7 @@ export function openBoardMenu(boardId) {
           <button type="button" class="list-row" data-go="labels">${icon('filter')}<span class="grow">Etiquetas</span>${icon('right', 's')}</button>` : ''}
           <button type="button" class="list-row" data-go="share">${icon('users')}<span class="grow">Miembros y permisos</span>${icon('right', 's')}</button>
           <button type="button" class="list-row" data-go="archived">${icon('archive')}<span class="grow">Tarjetas archivadas</span><span class="muted">${archived}</span></button>
+          <button type="button" class="list-row" data-go="activity">${icon('activity')}<span class="grow">Actividad</span>${icon('right', 's')}</button>
           <button type="button" class="list-row" data-go="template">${icon('board')}<span class="grow">Guardar como plantilla</span>${icon('right', 's')}</button>
         </div>
         <div class="section-title danger">Zona delicada</div>
@@ -440,6 +563,7 @@ export function openBoardMenu(boardId) {
         if (go === 'share') openShare(boardId);
         if (go === 'archived') openArchived(boardId);
         if (go === 'template') openSaveTemplate(boardId);
+        if (go === 'activity') openActivity(boardId);
         if (go === 'delete') deleteBoard(boardId);
         if (go === 'leave') leaveBoard(boardId);
       }));

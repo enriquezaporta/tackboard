@@ -654,3 +654,30 @@ body.focus-open { overflow: hidden; }
 .viewer-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
 .viewer-img { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); }
 .viewer-img img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+
+/* Colaboración: responsables, comentarios y actividad */
+.mini-av { width: 20px; height: 20px; border-radius: 50%; background: var(--c, var(--faint)); color: #fff; font-size: 11px; font-weight: 700;
+  display: inline-flex; align-items: center; justify-content: center; flex: none; line-height: 1; }
+.mini-av.lg { width: 30px; height: 30px; font-size: 13px; }
+.mini-av.more { background: var(--surface-2); color: var(--muted); }
+.avs { display: inline-flex; margin-left: auto; }
+.avs .mini-av { box-shadow: 0 0 0 2px var(--surface); }
+.avs .mini-av + .mini-av { margin-left: -5px; }
+.chip.person { padding-left: 4px; }
+.comments-head { margin-top: 18px; }
+.comments { display: flex; flex-direction: column; gap: 12px; margin: 8px 0 12px; }
+.comment { display: flex; gap: 10px; align-items: flex-start; }
+.comment .grow { flex: 1; min-width: 0; }
+.comment-meta { display: flex; align-items: center; gap: 8px; }
+.comment-meta .sm-btn { width: 28px; height: 28px; margin-left: auto; }
+.comment-text { white-space: pre-wrap; overflow-wrap: anywhere; margin-top: 2px; }
+.comment-form { display: flex; gap: 8px; align-items: flex-end; margin-bottom: 16px; }
+.comment-form .textarea { min-height: 46px; flex: 1; }
+.activity { display: flex; flex-direction: column; gap: 14px; margin: 10px 0 16px; }
+.act-row { display: flex; gap: 10px; align-items: flex-start; overflow-wrap: anywhere; }
+.act-row .grow { flex: 1; min-width: 0; }
+button.link { border: 0; background: none; padding: 0; color: var(--accent-text); font: inherit; text-decoration: underline; cursor: pointer; text-align: left; }
+.qa-preview { margin-top: 6px; min-height: 0; }
+.qa-preview:empty { display: none; }
+.small-chip { font-size: 12px; padding: 3px 8px; }
+.summary-chips button.chip[aria-pressed="true"] { background: var(--dark); color: var(--dark-ink); border-color: var(--dark); }

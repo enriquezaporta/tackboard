@@ -1,6 +1,6 @@
 // Piezas de interfaz compartidas por varias pantallas.
 import * as S from '../store.js';
-import { esc, icon, dueLabel, isOverdue } from '../util.js';
+import { esc, icon, dueLabel, isOverdue, personColor, initial } from '../util.js';
 import { PRIO_NAME } from '../sheets.js';
 
 // "Hoy", "Ayer" y los días de la semana van en minúscula detrás de "Venció".
@@ -12,6 +12,14 @@ export function labelChips(card, board) {
     .map((l) => `<span class="lbl" data-c="${esc(l.color)}">${esc(l.name || '·')}</span>`);
   if (card.data.priority) chips.unshift(`<span class="lbl prio-${card.data.priority}">${PRIO_NAME[card.data.priority]}</span>`);
   return chips.length ? `<span class="labels">${chips.join('')}</span>` : '';
+}
+
+/** Iniciales de los responsables (como mucho 3). */
+export function avatars(card) {
+  const list = (card.data.assignees || []).filter((u) => S.people(card.boardId).some((p) => p.username === u));
+  if (!list.length) return '';
+  return `<span class="avs" title="${esc(list.map((u) => S.personName(card.boardId, u)).join(', '))}">${list.slice(0, 3).map((u) =>
+    `<span class="mini-av" data-c="${personColor(u)}">${esc(initial(S.personName(card.boardId, u)))}</span>`).join('')}${list.length > 3 ? `<span class="mini-av more">+${list.length - 3}</span>` : ''}</span>`;
 }
 
 function checkMeta(d) {
@@ -31,6 +39,8 @@ export function boardCard(card, board, draggable) {
     d.repeat?.freq ? `<span class="tag" title="Se repite">${icon('repeat', 's')}</span>` : '',
     d.description ? `<span class="tag" title="Tiene descripción">${icon('text', 's')}</span>` : '',
     d.attachments?.length ? `<span class="tag" title="Adjuntos">${icon('clip', 's')}${d.attachments.length}</span>` : '',
+    S.commentCount(card.id) ? `<span class="tag" title="Comentarios">${icon('chat', 's')}${S.commentCount(card.id)}</span>` : '',
+    avatars(card),
   ].filter(Boolean).join('');
   return `<button type="button" class="card ${late ? 'overdue' : ''} ${d.done ? 'is-done' : ''}" data-open="${esc(card.id)}"
       ${draggable ? `data-drag="${esc(card.id)}"` : ''}>
@@ -56,7 +66,8 @@ export function taskRow(card) {
         ${d.due ? `<span class="${late ? 'late' : 'when'}">${esc(dueLabel(d.due, d.dueTime))}</span>` : ''}
         <span class="tag"><span class="dot" data-c="${esc(b?.data.color)}"></span>${esc(b?.data.name || '')}</span>
         ${checkMeta(d)}
-        ${shared ? '<span class="tag">Compartido</span>' : ''}
+        ${S.commentCount(card.id) ? `<span class="tag" title="Comentarios">${icon('chat', 's')}${S.commentCount(card.id)}</span>` : ''}
+        ${avatars(card) || (shared ? '<span class="tag">Compartido</span>' : '')}
       </span>
       ${d.checklist.length ? `<span class="progress"><i data-p="${Math.round(d.checklist.filter((i) => i.done).length / d.checklist.length * 100)}" data-c="${esc(b?.data.color)}"></i></span>` : ''}
     </button>

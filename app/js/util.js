@@ -189,12 +189,31 @@ const ICONS = {
   inbox: '<path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
   filter: '<path d="M4 5h16l-6 8v5l-4 2v-7z"/>',
   pin: '<path d="M9 3h6l-1 6 4 4H6l4-4z"/><path d="M12 13v8"/>',
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
   clip: '<path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.5 8.5a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>',
   timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9.5 2.5h5M12 2.5V5"/>',
   play: '<path d="M8 5.5v13l10-6.5z"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
 };
 export const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+
+/** «hace 5 min», «hoy 18:30», «ayer 9:05», «12 oct 18:30». */
+export function whenText(ms) {
+  const diff = Date.now() - ms;
+  if (diff < 60000) return 'ahora';
+  if (diff < 3600000) return `hace ${Math.floor(diff / 60000)} min`;
+  const d = new Date(ms);
+  const hm = `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const day = dateStr(d);
+  if (day === todayStr()) return `hoy ${hm}`;
+  if (day === addDays(todayStr(), -1)) return `ayer ${hm}`;
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()].toLowerCase()}${d.getFullYear() !== new Date().getFullYear() ? ` ${d.getFullYear()}` : ''} ${hm}`;
+}
+
+/** Color fijo para la inicial de cada persona. */
+export const personColor = (username) => COLORS[[...(username || '?')].reduce((a, c) => a + c.charCodeAt(0), 0) % COLORS.length];
+export const initial = (name) => ([...(name || '?').trim()][0] || '?').toUpperCase();
 
 export function debounce(fn, ms) {
   let t;

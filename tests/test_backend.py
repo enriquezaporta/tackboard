@@ -1339,6 +1339,145 @@ class BackendTest(unittest.TestCase):
         self.assertEqual(os.listdir(d), [])
         self.assertTrue(os.path.exists(server.file_path(fid)))
 
+    # ---------------------------------------------------------------- 1.4: colaboración
+
+    def comment(self, cid, bid, card_id, text, **kw):
+        return {"id": cid, "kind": "comment", "boardId": bid, "updatedAt": now_ms() + kw.pop("dt", 0),
+                "data": {"cardId": card_id, "text": text, **kw}}
+
+    def collab_setup(self):
+        a, bid, col, sent, n = self.notify_setup()
+        b, r = self.user(), self.user()
+        key_b, sub_b = self.make_device()
+        self.assertEqual(b.post("/api/push/subscribe", sub_b)[0], 200)
+        self.share(a, b, bid, "write")
+        self.share(a, r, bid, "read")
+        app = self.srv.RequestHandlerClass.app
+        app.notices_sync = True
+        self.addCleanup(lambda: setattr(app, "notices_sync", False))
+        sent_b = []
+
+        class Res:
+            status = 201
+            def __enter__(self): return self
+            def __exit__(self, *e): return False
+        def opener(req, timeout=10):
+            ep = req.full_url
+            if ep == sub_b["endpoint"]:
+                sent_b.append(self.decrypt(key_b, sub_b, req.data))
+            else:
+                sent.append(ep)
+            return Res()
+        app.push_opener = opener
+        c = card(server.b64u(os.urandom(16)), bid, col, "Llamar al fontanero")
+        self.sync(a, [c])
+        return a, b, r, bid, col, c, sent_b
+
+    def test_assignees(self):
+        a, b, r, bid, col, c, sent_b = self.collab_setup()
+        outsider = self.user()
+        upd = dict(c, updatedAt=now_ms() + 10, data=dict(c["data"], assignees=[b.username, outsider.username, "nadie_x"]))
+        self.sync(a, [upd])
+        got = [x for x in self.sync(a)["changes"] if x["id"] == c["id"]][0]["data"]
+        self.assertEqual(got["assignees"], [b.username])          # solo miembros activos
+        self.assertEqual(len(sent_b), 1)
+        self.assertIn("te ha asignado una tarea", sent_b[0]["body"])
+        self.assertNotIn("fontanero", sent_b[0]["body"])          # sin títulos por defecto
+        # Volver a guardar sin cambiar responsables no avisa otra vez.
+        self.sync(a, [dict(upd, updatedAt=now_ms() + 20, data=dict(got, title="Llamar al fontanero hoy"))])
+        self.assertEqual(len(sent_b), 1)
+        # Quien se asigna a sí mismo no recibe aviso; con avisos de actividad apagados, tampoco.
+        b.post("/api/push/prefs", {"activityPush": False})
+        c2 = card(server.b64u(os.urandom(16)), bid, col, "Otra", assignees=[b.username])
+        self.sync(a, [c2])
+        self.assertEqual(len(sent_b), 1)
+        # La lista de personas de cada tablero llega con la sincronización.
+        people = [x for x in self.sync(b)["boards"] if x["id"] == bid][0]["people"]
+        self.assertEqual({p["username"] for p in people}, {a.username, b.username, r.username})
+        self.assertEqual(len(a.post("/api/sync", {"since": 0, "changes": [card(server.b64u(os.urandom(16)), bid, col, "x", assignees=["A B"])]})[1]["rejected"]), 1)
+
+    def test_comments(self):
+        a, b, r, bid, col, c, sent_b = self.collab_setup()
+        cm = self.comment(server.b64u(os.urandom(16)), bid, c["id"], "Viene el jueves", author="otro", createdAt=1)
+        self.assertEqual(self.sync(a, [cm])["rejected"], [])
+        got = [x for x in self.sync(b)["changes"] if x["id"] == cm["id"]][0]["data"]
+        self.assertEqual(got["author"], a.username)                 # el autor lo pone el servidor
+        self.assertGreater(got["createdAt"], 1)
+        self.assertEqual(len(sent_b), 1)
+        self.assertIn("ha comentado", sent_b[0]["body"])
+        # Lectura: puede leer, no comentar.
+        self.assertTrue(any(x["id"] == cm["id"] for x in self.sync(r)["changes"]))
+        self.assertEqual(self.sync(r, [self.comment(server.b64u(os.urandom(16)), bid, c["id"], "hola")])["rejected"][0]["reason"], "forbidden")
+        # Solo el autor lo edita; lo borran el autor o quien gestiona el tablero.
+        edit = dict(cm, updatedAt=now_ms() + 50, data={"cardId": c["id"], "text": "Cambiado"})
+        self.assertEqual(self.sync(b, [edit])["rejected"][0]["reason"], "forbidden")
+        self.assertEqual(self.sync(a, [edit])["rejected"], [])
+        cm_b = self.comment(server.b64u(os.urandom(16)), bid, c["id"], "Vale")
+        self.sync(b, [cm_b])
+        self.assertEqual(self.sync(r, [dict(cm_b, updatedAt=now_ms() + 60, deleted=True)])["rejected"][0]["reason"], "forbidden")
+        self.assertEqual(self.sync(a, [dict(cm_b, updatedAt=now_ms() + 70, deleted=True)])["rejected"], [])
+        # Un comentario debe ir en una tarjeta del mismo tablero.
+        bid2, col2 = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        self.assertEqual(len(self.sync(a, [self.comment(server.b64u(os.urandom(16)), bid2, c["id"], "x")])["rejected"]), 1)
+        # Al borrar la tarjeta se borran sus comentarios.
+        self.sync(a, [dict(c, updatedAt=now_ms() + 80, deleted=True, data=None)])
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT deleted FROM records WHERE id=?", (cm["id"],))["deleted"], 1)
+
+    def test_activity(self):
+        a, b, r, bid, col, c, sent_b = self.collab_setup()
+        done_col = server.b64u(os.urandom(16))
+        self.sync(a, [column(done_col, bid, "Hecho", done=True)])
+        self.sync(b, [dict(c, updatedAt=now_ms() + 10, data=dict(c["data"], columnId=done_col, done=True))])
+        st, act = r.get("/api/boards/%s/activity" % bid)
+        self.assertEqual(st, 200)
+        kinds = [x["kind"] for x in act["items"]]
+        self.assertEqual(kinds[:3], ["done", "moved", "created"])
+        self.assertEqual(act["items"][0]["username"], b.username)
+        self.assertEqual(act["items"][1]["detail"], "Hecho")
+        self.assertEqual(self.user().get("/api/boards/%s/activity" % bid)[0], 403)
+        # Un cambio rechazado no deja actividad.
+        n = len(r.get("/api/boards/%s/activity" % bid)[1]["items"])
+        bad = card(server.b64u(os.urandom(16)), bid, "noexiste12345678", "Columna mala")
+        self.assertEqual(len(self.sync(a, [bad])["rejected"]), 1)
+        self.assertEqual(len(r.get("/api/boards/%s/activity" % bid)[1]["items"]), n)
+        # Al borrar la cuenta, su actividad queda sin nombre.
+        b.post("/api/me/delete", {"password": "secreto123"})
+        items = r.get("/api/boards/%s/activity" % bid)[1]["items"]
+        self.assertIsNone([x for x in items if x["kind"] == "done"][0]["username"])
+
+    def test_collab_review_fixes(self):
+        a, b, r, bid, col, c, sent_b = self.collab_setup()
+        # Muchos cambios de la misma tarjeta en una sincronización: poca actividad.
+        t0 = now_ms()
+        changes = [dict(c, updatedAt=t0 + 10 + i, data=dict(c["data"], done=bool(i % 2), assignees=[b.username] if i % 2 else []))
+                   for i in range(100)]
+        self.sync(a, changes)
+        items = r.get("/api/boards/%s/activity" % bid)[1]["items"]
+        self.assertLessEqual(len(items), 6)
+        self.assertLessEqual(len(sent_b), 1)          # un solo aviso de asignación por tarjeta y sincronización
+        # El texto de un comentario no queda en la actividad.
+        cm = self.comment(server.b64u(os.urandom(16)), bid, c["id"], "mi contraseña es hunter2")
+        self.sync(b, [cm])
+        self.sync(b, [dict(cm, updatedAt=now_ms() + 200, deleted=True)])
+        self.assertNotIn("hunter2", json.dumps(r.get("/api/boards/%s/activity" % bid)[1]))
+        self.assertEqual(r.get("/api/boards/%s/activity?before=%d" % (bid, 2 ** 70))[0], 200)
+        # Un nombre de usuario reutilizado no hereda comentarios ni tarjetas.
+        cm2 = self.comment(server.b64u(os.urandom(16)), bid, c["id"], "Comentario de b")
+        self.sync(b, [cm2])
+        self.sync(a, [dict(c, updatedAt=now_ms() + 300, data=dict(c["data"], assignees=[b.username]))])
+        name = b.username
+        b.post("/api/me/delete", {"password": "secreto123"})
+        b2 = Client(self.base)
+        st, rr = b2.post("/api/auth/register", {"username": name, "password": "secreto123", "name": "Otro", "consent": True})
+        self.assertEqual(st, 200, rr)
+        b2.token, b2.username = rr["token"], name
+        self.share(a, b2, bid, "write")
+        got = {x["id"]: x for x in self.sync(b2)["changes"]}
+        self.assertEqual(got[cm2["id"]]["data"]["author"], "")
+        self.assertNotIn(name, got[c["id"]]["data"]["assignees"])
+        self.assertEqual(self.sync(b2, [dict(cm2, updatedAt=now_ms() + 400, data={"cardId": c["id"], "text": "mío"})])["rejected"][0]["reason"], "forbidden")
+
     def test_unread_body_closes_connection(self):
         """Un cuerpo no leído no debe interpretarse como la siguiente petición (respuestas cruzadas)."""
         import socket

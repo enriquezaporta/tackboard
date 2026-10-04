@@ -70,8 +70,8 @@ except ImportError:  # pragma: no cover
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "1.3.0"
-POLICY_VERSION = "2026-10-04-2"
+VERSION = "1.4.0"
+POLICY_VERSION = "2026-10-04-3"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")
 FILES_DIR = os.environ.get("TB_FILES") or os.path.join(os.path.dirname(DB_PATH) or ".", "files")
@@ -103,6 +103,13 @@ MAX_MEMBERS = 50
 MAX_PENDING_INVITES = 20
 MAX_COLUMNS = 50
 MAX_CARDS = 5000
+MAX_COMMENTS = 10000          # comentarios por tablero
+MAX_CARD_COMMENTS = 500       # comentarios por tarjeta
+MAX_ASSIGNEES = 10
+ACTIVITY_DAYS = 90            # la actividad de un tablero se guarda 90 días
+ACTIVITY_KEEP = 5000          # y, como mucho, las 5.000 entradas más recientes de cada tablero
+ACTIVITY_PER_SYNC = 200       # entradas nuevas por sincronización
+NOTICES_PER_SYNC = 20         # avisos de asignaciones y comentarios por sincronización
 MAX_RECORD_BYTES = 32 * 1024          # un registro, en bytes UTF-8
 MAX_BOARD_BYTES = 16 * 1024 * 1024    # todo el contenido de un tablero
 PAGE_BYTES = 4 * 1024 * 1024          # tamaño máximo de una página de sincronización
@@ -258,6 +265,20 @@ CREATE TABLE IF NOT EXISTS attachments (
 );
 CREATE INDEX IF NOT EXISTS attachments_board ON attachments(board_id);
 CREATE INDEX IF NOT EXISTS attachments_card ON attachments(card_id);
+-- Actividad de cada tablero (quién hizo qué). Se borra a los 90 días.
+CREATE TABLE IF NOT EXISTS activity (
+  id INTEGER PRIMARY KEY,
+  board_id TEXT NOT NULL,
+  user_id INTEGER,
+  kind TEXT NOT NULL,
+  card_id TEXT,
+  title TEXT,
+  detail TEXT,
+  at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS activity_board ON activity(board_id, id);
+CREATE INDEX IF NOT EXISTS records_comment_card ON records(board_id, json_extract(data,'$.cardId'))
+  WHERE kind='comment' AND deleted=0;
 -- Plantillas de tablero de cada persona.
 CREATE TABLE IF NOT EXISTS templates (
   id TEXT PRIMARY KEY,
@@ -663,6 +684,10 @@ def clean_card(d):
                          "mime": a["mime"], "size": v_int_or_none(a.get("size"), "attachments", 0, MAX_FILE) or 0,
                          "w": v_int_or_none(a.get("w"), "attachments", 0, 20000),
                          "h": v_int_or_none(a.get("h"), "attachments", 0, 20000)})
+    assignees = d.get("assignees") or []
+    if not isinstance(assignees, list) or len(assignees) > MAX_ASSIGNEES or \
+            not all(isinstance(x, str) and USERNAME_RE.match(x) for x in assignees):
+        raise Invalid("assignees")
     repeated_as = d.get("repeatedAs")
     if repeated_as is not None:
         if not isinstance(repeated_as, dict):
@@ -690,10 +715,23 @@ def clean_card(d):
         "repeat": repeat,
         "repeatedAs": repeated_as,
         "attachments": out_atts,
+        "assignees": list(dict.fromkeys(assignees)),
     }
 
 
-CLEANERS = {"board": clean_board, "column": clean_column, "card": clean_card}
+def clean_comment(d):
+    """Comentario de una tarjeta. El autor y la fecha los pone el servidor."""
+    return {
+        "cardId": v_ref(d.get("cardId"), "cardId", allow_none=False),
+        "text": v_str(d.get("text"), 2000, "text", allow_empty=False, multiline=True),
+        "author": "",
+        "authorId": None,
+        "createdAt": 0,
+        "editedAt": None,
+    }
+
+
+CLEANERS = {"board": clean_board, "column": clean_column, "card": clean_card, "comment": clean_comment}
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -722,7 +760,9 @@ ICAL_TOKEN = RateLimiter(60, 3600)      # descargas por enlace
 ICAL_BAD_IP = RateLimiter(20, 3600)     # enlaces no válidos por IP
 TEMPLATE_USER = RateLimiter(60, 3600)  # plantillas guardadas por persona
 FILE_USER = RateLimiter(120, 3600)     # adjuntos subidos por persona
-LIMITERS = LIMITERS + (PUSH_TEST, POMO_USER, ICAL_NEW, ICAL_TOKEN, ICAL_BAD_IP, TEMPLATE_USER, FILE_USER)
+ACTIVITY_PUSH = RateLimiter(30, 3600)  # avisos de asignaciones y comentarios que recibe cada persona
+ACTIVITY_SEND = RateLimiter(60, 3600)  # avisos que provoca cada persona
+LIMITERS = LIMITERS + (PUSH_TEST, POMO_USER, ICAL_NEW, ICAL_TOKEN, ICAL_BAD_IP, TEMPLATE_USER, FILE_USER, ACTIVITY_PUSH, ACTIVITY_SEND)
 
 
 def b64u(data):
@@ -893,6 +933,7 @@ DEFAULT_PREFS = {
     "mutedBoards": [],               # tableros silenciados
     "tz": "UTC",
     "pomoPush": True,                # aviso al terminar un pomodoro o un descanso
+    "activityPush": True,            # avisos cuando te asignan una tarea o comentan en tus tableros
 }
 LATE_LIMIT_MS = 12 * 3600 * 1000     # un aviso que no se pudo entregar en 12 h ya no se envía
 REPEAT_GAP_MS = 30 * 60 * 1000       # el mismo recordatorio de la misma tarjeta, como mucho cada 30 min
@@ -947,6 +988,8 @@ def clean_prefs(body, prefs):
         out["showTitles"] = body["showTitles"] is True
     if "pomoPush" in body:
         out["pomoPush"] = body["pomoPush"] is True
+    if "activityPush" in body:
+        out["activityPush"] = body["activityPush"] is True
     if "defaultReminders" in body:
         r = body["defaultReminders"]
         if not isinstance(r, list) or not all(isinstance(x, str) and x in REMINDERS for x in r):
@@ -1892,6 +1935,8 @@ class FileApi:
 
 class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
     def __init__(self, store):
+        self._actor, self._notices = None, []
+        self._act, self._counts, self._unlink = {"n": 0, "seen": set(), "boards": set()}, {}, []
         self._vapid = None
         self.s = store
 
@@ -1951,7 +1996,7 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
         return d.get("name"), d.get("color")
 
     def delete_board(self, board_id):
-        delete_board(self.s, board_id)
+        delete_board(self.s, board_id, self._unlink)
 
     def boards_list(self, user_id):
         rows = self.s.q(
@@ -2158,6 +2203,9 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
                          for r in self.s.q("SELECT * FROM pomo_log WHERE user_id=? ORDER BY started_at", (u["id"],))]
             ical = self.s.one("SELECT created_at, excluded, last_fetch FROM ical_tokens WHERE user_id=?", (u["id"],))
             templates = [json.loads(r["data"]) for r in self.s.q("SELECT data FROM templates WHERE user_id=? ORDER BY created_at", (u["id"],))]
+            activity = [{"boardId": r["board_id"], "kind": r["kind"], "cardId": r["card_id"], "title": r["title"],
+                         "detail": r["detail"], "at": r["at"]}
+                        for r in self.s.q("SELECT * FROM activity WHERE user_id=? ORDER BY id", (u["id"],))]
             files = [{"id": r["id"], "boardId": r["board_id"], "cardId": r["card_id"], "name": r["name"], "type": r["mime"],
                       "size": r["size"], "createdAt": r["created_at"]}
                      for bid in ids for r in self.s.q("SELECT * FROM attachments WHERE board_id=?", (bid,))]
@@ -2175,6 +2223,7 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
             "pomodoros": pomodoros,
             "templates": templates,
             "attachments": files,
+            "activity": activity,
             "calendarLink": {"createdAt": ical["created_at"], "excludedBoards": json.loads(ical["excluded"]),
                              "lastFetch": ical["last_fetch"]} if ical else None,
         }
@@ -2194,23 +2243,55 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
         rejected = []
         sizes = {}  # bytes por tablero, calculados una vez por sincronización
         with self.s.lock:
+            # Con el candado puesto: solo hay una sincronización a la vez.
+            self._actor = u
+            self._notices = []  # avisos de asignaciones y comentarios, que se envían al terminar
+            self._act = {"n": 0, "seen": set(), "boards": set()}   # actividad apuntada en esta sincronización
+            self._counts = {}   # comentarios por tablero y por tarjeta, contados una vez
+            self._unlink = []   # archivos que se borran después de confirmar
             self.s.x("BEGIN IMMEDIATE")
             try:
                 # Primero los tableros nuevos, luego columnas y por último tarjetas.
-                order = {"board": 0, "column": 1, "card": 2}
+                order = {"board": 0, "column": 1, "card": 2, "comment": 3}
                 for ch in sorted(changes, key=lambda c: order.get(c.get("kind") if isinstance(c, dict) else None, 3)):
+                    # Cada cambio en su propio punto de guardado: si se rechaza, no deja nada a medias (actividad, avisos…).
+                    mark, unlink_mark = len(self._notices), len(self._unlink)
+                    self.s.x("SAVEPOINT cambio")
                     try:
                         self.apply_change(uid, ch, sizes)
+                        self.s.x("RELEASE cambio")
                     except ApiError as e:
+                        self.s.x("ROLLBACK TO cambio")
+                        self.s.x("RELEASE cambio")
+                        del self._notices[mark:]
+                        del self._unlink[unlink_mark:]
+                        sizes.clear()
+                        self._counts.clear()
                         cid = ch.get("id") if isinstance(ch, dict) and isinstance(ch.get("id"), str) else None
                         if cid and ID_RE.match(cid):
                             rejected.append(self.rejection(uid, cid, e.msg))
+                # Cada tablero guarda como mucho las ACTIVITY_KEEP entradas más recientes.
+                for bid in self._act["boards"]:
+                    self.s.x("""DELETE FROM activity WHERE board_id=? AND id < (SELECT id FROM activity WHERE board_id=?
+                                ORDER BY id DESC LIMIT 1 OFFSET ?)""", (bid, bid, ACTIVITY_KEEP - 1))
                 self.s.x("COMMIT")
             except Exception:
                 self.s.x("ROLLBACK")
+                self._unlink = []
                 raise
+            for path in self._unlink:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            self._unlink = []
 
+            notices, self._notices = self._notices, []
             boards = self.boards_list(uid)
+            for b in boards:
+                b["people"] = [{"username": r["username"], "name": r["name"]} for r in self.s.q(
+                    """SELECT u.username, u.name FROM members m JOIN users u ON u.id=m.user_id
+                       WHERE m.board_id=? AND m.status='active' ORDER BY m.created_at""", (b["id"],))]
             ids = [b["id"] for b in boards]
             out, more, cursor = [], False, max(self.s.ts, since)
             if ids:
@@ -2230,8 +2311,157 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
                 if more:
                     cursor = out[-1]["serverTs"]
             invitations = len(self.invitations(uid))
+        if notices:
+            self.send_notices(u, notices)
         return {"cursor": cursor, "changes": out, "boards": boards, "rejected": rejected,
                 "invitations": invitations, "more": more}
+
+    # ---- comentarios, asignaciones y actividad ------------------------------------------------------
+
+    def comment_rules(self, uid, role, board_id, existing, data, deleted):
+        """Comentarios: los escribe quien tiene permiso de escritura, siempre con su nombre; solo su autor los
+        edita, y los borra su autor o quien gestiona el tablero."""
+        me = self._actor["username"]
+        old = json.loads(existing["data"]) if existing and existing["data"] else None
+        mine = bool(old) and old.get("authorId") == uid   # por id: un nombre de usuario se puede volver a usar
+        if existing and existing["deleted"]:
+            raise ApiError(403, "forbidden")      # un comentario borrado no vuelve
+        if deleted:
+            if not old:
+                return None
+            if not mine and ROLE_RANK[role] < ROLE_RANK["admin"]:
+                raise ApiError(403, "forbidden")
+            return None
+        card = self.s.one("SELECT data FROM records WHERE id=? AND kind='card' AND board_id=? AND deleted=0", (data["cardId"], board_id))
+        if not card:
+            raise ApiError(400, "invalid:cardId")
+        t = now_ms()
+        if old:
+            if not mine or old.get("cardId") != data["cardId"]:
+                raise ApiError(403, "forbidden")
+            return {**data, "author": me, "authorId": uid, "createdAt": old.get("createdAt") or t, "editedAt": t}
+        data = {**data, "author": me, "authorId": uid, "createdAt": t, "editedAt": None}
+        title = json.loads(card["data"]).get("title", "")
+        # En la actividad no se copia el texto: si se borra el comentario, no queda en ningún sitio.
+        self.log_activity(board_id, uid, "comment", data["cardId"], title, None)
+        for who in self.board_people(board_id):
+            if who["id"] != uid:
+                self.queue_notice("comment", who["id"], board_id, data["cardId"], title, data["text"])
+        return data
+
+    def card_rules(self, uid, board_id, rid, existing, data, deleted, data_json, size):
+        """Responsables: solo miembros activos del tablero. Se apunta la actividad y se avisa a quien se asigna."""
+        old = json.loads(existing["data"]) if existing and existing["data"] else None
+        if deleted:
+            if old:
+                self.log_activity(board_id, uid, "deleted", rid, old.get("title"), None)
+                # Sus comentarios también se borran.
+                for c in self.s.q("""SELECT id FROM records WHERE board_id=? AND kind='comment' AND deleted=0
+                                     AND json_extract(data,'$.cardId')=?""", (board_id, rid)):
+                    self.s.x("UPDATE records SET data=NULL, deleted=1, server_ts=? WHERE id=?", (self.s.next_ts(), c["id"]))
+                self._counts.clear()
+            return data_json, size
+        people = {p["username"]: p["id"] for p in self.board_people(board_id)}
+        data["assignees"] = [a for a in data.get("assignees") or [] if a in people]
+        data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        size = len(data_json.encode())
+        title = data.get("title")
+        if not old:
+            self.log_activity(board_id, uid, "created", rid, title, None)
+        else:
+            if old.get("columnId") != data["columnId"]:
+                col = self.s.one("SELECT data FROM records WHERE id=?", (data["columnId"],))
+                self.log_activity(board_id, uid, "moved", rid, title, json.loads(col["data"]).get("name") if col and col["data"] else None)
+            if bool(old.get("done")) != bool(data["done"]):
+                self.log_activity(board_id, uid, "done" if data["done"] else "reopened", rid, title, None)
+            if bool(old.get("archived")) != bool(data["archived"]):
+                self.log_activity(board_id, uid, "archived" if data["archived"] else "restored", rid, title, None)
+            if (old.get("due"), old.get("dueTime")) != (data["due"], data["dueTime"]):
+                self.log_activity(board_id, uid, "due", rid, title, (data["due"] + " " + data["dueTime"]).strip() or None)
+        added = [a for a in data["assignees"] if a not in ((old or {}).get("assignees") or [])]
+        if added:
+            self.log_activity(board_id, uid, "assigned", rid, title, ", ".join(added))
+            for a in added:
+                if people[a] != uid:
+                    self.queue_notice("assigned", people[a], board_id, rid, title, None)
+        return data_json, size
+
+    def board_people(self, board_id):
+        return [dict(r) for r in self.s.q("""SELECT u.id, u.username, u.name FROM members m JOIN users u ON u.id=m.user_id
+                                              WHERE m.board_id=? AND m.status='active'""", (board_id,))]
+
+    def log_activity(self, board_id, uid, kind, card_id, title, detail):
+        """Una entrada por tarjeta y tipo en cada sincronización, y como mucho ACTIVITY_PER_SYNC."""
+        act = self._act
+        key = (card_id, kind) if kind != "comment" else None
+        if act["n"] >= ACTIVITY_PER_SYNC or (key and key in act["seen"]):
+            return
+        if key:
+            act["seen"].add(key)
+        act["n"] += 1
+        act["boards"].add(board_id)
+        self.s.x("INSERT INTO activity(board_id,user_id,kind,card_id,title,detail,at) VALUES(?,?,?,?,?,?,?)",
+                 (board_id, uid, kind, card_id, (title or "")[:200], (detail or None) and str(detail)[:200], now_ms()))
+
+    def queue_notice(self, kind, to_uid, board_id, card_id, title, text):
+        """Un aviso por persona, tarjeta y tipo en cada sincronización, y como mucho NOTICES_PER_SYNC."""
+        if len(self._notices) >= NOTICES_PER_SYNC:
+            return
+        if any(n[0] == kind and n[1] == to_uid and n[3] == card_id for n in self._notices):
+            return
+        self._notices.append((kind, to_uid, board_id, card_id, title, text))
+
+    def activity(self, u, board_id, before):
+        with self.s.lock:
+            self.require_role(board_id, u["id"], "read")
+            rows = self.s.q("""SELECT a.id, a.kind, a.card_id, a.title, a.detail, a.at, us.username, us.name
+                               FROM activity a LEFT JOIN users us ON us.id=a.user_id
+                               WHERE a.board_id=? AND a.id < ? ORDER BY a.id DESC LIMIT 50""",
+                            (board_id, before if 0 < before < 2 ** 62 else 2 ** 62))
+        return {"items": [{"id": r["id"], "kind": r["kind"], "cardId": r["card_id"], "title": r["title"], "detail": r["detail"],
+                           "at": r["at"], "username": r["username"], "name": r["name"]} for r in rows],
+                "more": len(rows) == 50}
+
+    def send_notices(self, actor, notices):
+        """Avisos push de asignaciones y comentarios, en segundo plano (la sincronización no espera)."""
+        if not PUSH_AVAILABLE:
+            return
+
+        def run():
+            for kind, rid_user, board_id, card_id, title, text in notices:
+                # Primero los límites (sin tocar la base de datos): por quien lo provoca y por quien lo recibe.
+                if ACTIVITY_PUSH.blocked(rid_user) or not ACTIVITY_SEND.hit(actor["id"]):
+                    continue
+                try:
+                    with self.s.lock:
+                        p = load_prefs(self.s, rid_user)
+                        urow = self.s.one("SELECT disabled FROM users WHERE id=?", (rid_user,))
+                        if not urow or urow["disabled"] or not p["enabled"] or not p.get("activityPush", True) \
+                                or board_id in p["mutedBoards"] or not self.membership(board_id, rid_user):
+                            continue
+                        # En su horario de silencio no se avisa (lo verá al abrir la app).
+                        t = now_ms()
+                        if quiet_deliver(t, p) != t:
+                            continue
+                        subs = active_subs(self.s, rid_user)
+                    if not subs or not ACTIVITY_PUSH.hit(rid_user):
+                        continue
+                    who = actor["name"] or actor["username"]
+                    if kind == "assigned":
+                        body = "%s te ha asignado %s" % (who, "«%s»" % title[:120] if p["showTitles"] else "una tarea")
+                    else:
+                        body = ("%s ha comentado en «%s»: %s" % (who, title[:80], text[:140])) if p["showTitles"] \
+                            else "%s ha comentado en una tarea" % who
+                    title_txt = (self.board_name(board_id)[0] or "Tackboard") if p["showTitles"] else "Tackboard"
+                    send_to_subs(self.s, self.vapid(), subs, {"title": title_txt, "body": body, "tag": "card-" + card_id,
+                                                              "url": "/#/tarjeta/" + card_id},
+                                 self.push_subject(), opener=getattr(self, "push_opener", None), ttl=86400)
+                except Exception as e:  # pragma: no cover
+                    print("Avisos: error %s" % type(e).__name__, file=sys.stderr, flush=True)
+        if getattr(self, "notices_sync", False):
+            run()
+        else:
+            threading.Thread(target=run, name="avisos-actividad", daemon=True).start()
 
     def rejection(self, uid, rid, reason):
         r = self.s.one("SELECT * FROM records WHERE id=?", (rid,))
@@ -2340,6 +2570,14 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
         if existing and existing["updated_at"] >= upd:
             raise ApiError(409, "stale")
 
+        if kind == "comment":
+            data = self.comment_rules(uid, role, board_id, existing, data, deleted)
+            if data is not None:
+                data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+                size = len(data_json.encode())
+        if kind == "card":
+            data_json, size = self.card_rules(uid, board_id, rid, existing, data, deleted, data_json, size)
+
         if kind == "board" and deleted:
             self.delete_board(board_id)
             sizes.pop(board_id, None)
@@ -2366,6 +2604,20 @@ class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
                 n = self.s.one("SELECT COUNT(*) FROM records WHERE board_id=? AND kind='card' AND deleted=0", (board_id,))[0]
                 if n >= MAX_CARDS:
                     raise ApiError(400, "limit")
+            if kind == "comment":
+                kb, kc = ("b", board_id), ("c", board_id, data["cardId"])
+                if kb not in self._counts:
+                    self._counts[kb] = self.s.one("SELECT COUNT(*) FROM records WHERE board_id=? AND kind='comment' AND deleted=0",
+                                                  (board_id,))[0]
+                if self._counts[kb] >= MAX_COMMENTS:
+                    raise ApiError(400, "limit")
+                if kc not in self._counts:
+                    self._counts[kc] = self.s.one("""SELECT COUNT(*) FROM records WHERE board_id=? AND json_extract(data,'$.cardId')=?
+                                                     AND kind='comment' AND deleted=0""", (board_id, data["cardId"]))[0]
+                if self._counts[kc] >= MAX_CARD_COMMENTS:
+                    raise ApiError(400, "limit")
+                self._counts[kb] += 1
+                self._counts[kc] += 1
             ts = self.s.next_ts()
             self.s.x("INSERT INTO records(id,board_id,kind,data,updated_at,server_ts,deleted) VALUES(?,?,?,?,?,?,0)",
                      (rid, board_id, kind, data_json, upd, ts))
@@ -2481,11 +2733,15 @@ def file_path(fid):
     return os.path.join(FILES_DIR, fid[:2], fid)
 
 
-def delete_files(store, where, args):
-    """Borra adjuntos (filas y archivos). `where` es una condición SQL sobre la tabla attachments."""
+def delete_files(store, where, args, defer=None):
+    """Borra adjuntos (filas y archivos). `where` es una condición SQL sobre la tabla attachments. Con `defer`,
+    los archivos no se borran aún: se añaden a esa lista para borrarlos después de confirmar la transacción."""
     ids = [r["id"] for r in store.q("SELECT id FROM attachments WHERE " + where, args)]
     store.x("DELETE FROM attachments WHERE " + where, args)
     for fid in ids:
+        if defer is not None:
+            defer.append(file_path(fid))
+            continue
         try:
             os.remove(file_path(fid))
         except OSError:
@@ -2493,8 +2749,9 @@ def delete_files(store, where, args):
     return len(ids)
 
 
-def delete_board(store, board_id):
-    delete_files(store, "board_id=?", (board_id,))
+def delete_board(store, board_id, defer=None):
+    delete_files(store, "board_id=?", (board_id,), defer)
+    store.x("DELETE FROM activity WHERE board_id=?", (board_id,))
     store.x("DELETE FROM records WHERE board_id=?", (board_id,))
     store.x("DELETE FROM members WHERE board_id=?", (board_id,))
     store.x("INSERT OR IGNORE INTO deleted_boards(id, deleted_at) VALUES(?,?)", (board_id, now()))
@@ -2516,6 +2773,20 @@ def delete_user(store, uid):
     store.x("DELETE FROM ical_tokens WHERE user_id=?", (uid,))
     store.x("DELETE FROM templates WHERE user_id=?", (uid,))
     store.x("UPDATE attachments SET user_id=NULL WHERE user_id=?", (uid,))
+    store.x("UPDATE activity SET user_id=NULL WHERE user_id=?", (uid,))
+    # Sus comentarios en tableros ajenos se quedan, sin autor; y deja de ser responsable de tarjetas. Así, si
+    # alguien registra después el mismo nombre de usuario, no hereda nada.
+    uname = store.one("SELECT username FROM users WHERE id=?", (uid,))
+    for r in store.q("SELECT id, data FROM records WHERE kind='comment' AND deleted=0 AND json_extract(data,'$.authorId')=?", (uid,)):
+        d = json.loads(r["data"])
+        d.update({"author": "", "authorId": None})
+        store.x("UPDATE records SET data=?, server_ts=? WHERE id=?", (json.dumps(d, ensure_ascii=False, separators=(",", ":")), store.next_ts(), r["id"]))
+    if uname:
+        for r in store.q("SELECT id, data FROM records WHERE kind='card' AND deleted=0 AND data LIKE ?", ('%"' + uname["username"] + '"%',)):
+            d = json.loads(r["data"])
+            if uname["username"] in (d.get("assignees") or []):
+                d["assignees"] = [a for a in d["assignees"] if a != uname["username"]]
+                store.x("UPDATE records SET data=?, server_ts=? WHERE id=?", (json.dumps(d, ensure_ascii=False, separators=(",", ":")), store.next_ts(), r["id"]))
     store.x("DELETE FROM users WHERE id=?", (uid,))
 
 
@@ -2525,6 +2796,7 @@ def delete_user(store, uid):
 
 ROUTE_MEMBERS = re.compile(r"^/api/boards/([A-Za-z0-9_-]{8,64})/members$")
 ROUTE_MEMBER = re.compile(r"^/api/boards/([A-Za-z0-9_-]{8,64})/members/([a-z0-9_.-]{3,30})$")
+ROUTE_ACTIVITY = re.compile(r"^/api/boards/([A-Za-z0-9_-]{8,64})/activity$")
 ROUTE_FILE = re.compile(r"^/api/files/([A-Za-z0-9_-]{8,64})$")
 ROUTE_TEMPLATE = re.compile(r"^/api/templates/([A-Za-z0-9_-]{8,64})$")
 ROUTE_INVITE = re.compile(r"^/api/invitations/([A-Za-z0-9_-]{8,64})$")
@@ -2734,6 +3006,14 @@ class Handler(BaseHTTPRequestHandler):
         m = ROUTE_INVITE.match(path)
         if m and method == "POST":
             return self.send_json(200, app.answer_invitation(u, m.group(1), body))
+        m = ROUTE_ACTIVITY.match(path)
+        if m and method == "GET":
+            q = parse_qs(urlparse(self.path).query)
+            try:
+                before = int((q.get("before") or ["0"])[0])
+            except ValueError:
+                before = 0
+            return self.send_json(200, app.activity(u, m.group(1), before))
         m = ROUTE_MEMBERS.match(path)
         if m and method == "GET":
             return self.send_json(200, app.members(u, m.group(1)))
@@ -2911,6 +3191,8 @@ def main():
         while True:
             time.sleep(3600)
             try:
+                with store.lock:
+                    store.x("DELETE FROM activity WHERE at < ?", (now_ms() - ACTIVITY_DAYS * 86400_000,))
                 files_gc(store)
             except Exception as e:  # pragma: no cover
                 print("Mantenimiento: error %s" % type(e).__name__, file=sys.stderr, flush=True)

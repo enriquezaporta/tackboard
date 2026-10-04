@@ -6,7 +6,7 @@ import { taskRow, sortByDue } from './parts.js';
 import { openCard } from '../sheets.js';
 import { PRIO_NAME } from '../sheets.js';
 
-const f = { q: '', board: '', state: 'open', when: '', prio: '', label: '', archived: false };
+const f = { q: '', board: '', state: 'open', when: '', prio: '', label: '', who: '', archived: false };
 const MAX = 200;
 
 /** Minúsculas y sin tildes, carácter a carácter (para poder resaltar en el texto original). */
@@ -66,6 +66,13 @@ function results() {
   const week = addDays(t, 7);
   const lab = norm(f.label);
   const list = [];
+  // Textos de los comentarios por tarjeta (una sola pasada).
+  const talk = new Map();
+  if (terms.length) {
+    for (const r of S.state.records.values()) {
+      if (r.kind === 'comment' && !r.deleted && r.data) talk.set(r.data.cardId, [...(talk.get(r.data.cardId) || []), r.data.text]);
+    }
+  }
   for (const c of S.cards()) {
     const d = c.data;
     if (!f.archived && d.archived) continue;
@@ -73,6 +80,8 @@ function results() {
     if (f.state === 'open' && d.done) continue;
     if (f.state === 'done' && !d.done) continue;
     if (f.prio && d.priority !== f.prio) continue;
+    if (f.who === 'me' && !(d.assignees || []).includes(S.state.user?.username)) continue;
+    if (f.who === 'none' && (d.assignees || []).length) continue;
     if (f.when === 'late' && !(d.due && d.due < t && !d.done)) continue;
     if (f.when === 'today' && d.due !== t) continue;
     if (f.when === 'week' && !(d.due && d.due >= t && d.due <= week)) continue;
@@ -83,7 +92,8 @@ function results() {
     let score = 0;
     if (terms.length) {
       const title = norm(d.title);
-      const rest = norm([d.description, ...(d.checklist || []).map((i) => i.text), ...labels, b?.data.name].join(' '));
+      const rest = norm([d.description, ...(d.checklist || []).map((i) => i.text), ...labels, b?.data.name,
+        ...(talk.get(c.id) || [])].join(' '));
       if (!terms.every((x) => title.includes(x) || rest.includes(x))) continue;
       score = terms.filter((x) => title.includes(x)).length * 10 + (title.startsWith(terms[0]) ? 5 : 0);
     }
@@ -94,7 +104,7 @@ function results() {
   return { list, terms };
 }
 
-const anyFilter = () => f.q.trim() || f.board || f.when || f.prio || f.label || f.state !== 'open' || f.archived;
+const anyFilter = () => f.q.trim() || f.board || f.when || f.prio || f.label || f.who || f.state !== 'open' || f.archived;
 
 function resultsHtml() {
   if (!anyFilter()) return '<div class="empty small-empty">Escribe para buscar en el título, la descripción, la checklist y las etiquetas de todas tus tarjetas.</div>';
@@ -133,6 +143,7 @@ export function renderSearch(main) {
         ${sel('f-board', 'Tablero', f.board, [['', 'Todos los tableros'], ...boards.map((b) => [b.id, b.data.name])])}
         ${sel('f-when', 'Fecha', f.when, [['', 'Cualquier fecha'], ['late', 'Vencidas'], ['today', 'Hoy'], ['week', 'Próximos 7 días'], ['none', 'Sin fecha']])}
         ${sel('f-prio', 'Prioridad', f.prio, [['', 'Cualquier prioridad'], ['high', PRIO_NAME.high], ['medium', PRIO_NAME.medium], ['low', PRIO_NAME.low]])}
+        ${sel('f-who', 'Responsable', f.who, [['', 'Cualquier responsable'], ['me', 'Asignadas a mí'], ['none', 'Sin asignar']])}
         ${labels.length ? sel('f-label', 'Etiqueta', f.label, [['', 'Cualquier etiqueta'], ...labels.map((n) => [n, n])]) : ''}
         <label class="check-inline"><input type="checkbox" id="f-arch" ${f.archived ? 'checked' : ''}> Incluir archivadas</label>
         ${anyFilter() ? '<button type="button" class="btn sm ghost" data-clear>Limpiar</button>' : ''}
@@ -159,7 +170,7 @@ export function renderSearch(main) {
   main.querySelectorAll('[data-state]').forEach((b) => b.addEventListener('click', () => { f.state = b.dataset.state; renderSearch(main); }));
   main.querySelector('#f-arch').addEventListener('change', (e) => { f.archived = e.target.checked; renderSearch(main); });
   main.querySelector('[data-clear]')?.addEventListener('click', () => {
-    Object.assign(f, { q: '', board: '', state: 'open', when: '', prio: '', label: '', archived: false });
+    Object.assign(f, { q: '', board: '', state: 'open', when: '', prio: '', label: '', who: '', archived: false });
     renderSearch(main);
   });
   main.onclick = (e) => {

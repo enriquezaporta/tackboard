@@ -36,6 +36,7 @@ En memoria; nada se escribe en disco.
 | Enlaces de calendario que no existen | 20 por hora por IP |
 | Adjuntos subidos | 120 por hora por usuario |
 | Plantillas guardadas | 60 por hora por usuario |
+| Avisos de asignaciones y comentarios | 20 por sincronización, 60 por hora por quien los provoca, 30 por hora por quien los recibe |
 
 Las claves caducan con su ventana (como mucho, una hora). Si hay demasiadas, se descartan las más antiguas.
 La IP real llega en `X-Real-IP` desde Caddy, que solo se fía de `X-Forwarded-For` si la petición viene de un
@@ -114,6 +115,19 @@ proxy de confianza (`tackboard-admin proxy`).
     petición.
   - El servidor no registra las rutas pedidas y Caddy no guarda registro de accesos, así que el enlace no queda escrito.
 
+## Comentarios, responsables y actividad
+
+- El autor de un comentario lo pone el servidor y se comprueba por id de usuario: si alguien borra su cuenta y otra
+  persona registra después el mismo nombre, no puede editar ni borrar sus comentarios. Al borrar una cuenta, sus
+  comentarios quedan sin autor y deja de ser responsable de sus tarjetas.
+- Comentar exige permiso de escritura; editar, ser el autor; borrar, ser el autor o gestionar el tablero. Un
+  comentario borrado no se puede recuperar con una sincronización.
+- Solo pueden ser responsables los miembros activos del tablero (y solo ellos reciben avisos).
+- La actividad la ve quien es miembro del tablero. No guarda el texto de los comentarios. Tiene topes por
+  sincronización y por tablero para que no pueda crecer sin límite.
+- Los avisos respetan «Recibir avisos», «Asignaciones y comentarios», los tableros silenciados, el horario de silencio
+  y «Mostrar el título de la tarea»; se vuelve a comprobar la pertenencia al tablero antes de enviarlos.
+
 ## Adjuntos
 
 - Solo JPEG, PNG, WebP y PDF, comprobados por sus primeros bytes (no por la extensión ni por lo que diga el navegador).
@@ -186,6 +200,16 @@ ni altos. Encontró uno medio y seis bajos, todos corregidos:
   - la limpieza de adjuntos no barría restos y se hacía con el candado puesto;
   - la caché del navegador no distinguía sesiones;
   - el bloqueo de pantalla del modo enfoque podía quedarse activo.
+
+En la versión 1.4 una sexta revisión de responsables, comentarios y actividad encontró dos fallos altos, tres medios y
+cuatro bajos, todos corregidos con prueba:
+
+- **Altos**: cualquiera podía hacer crecer sin límite la tabla de actividad, y el recuento de comentarios podía bloquear
+  el servidor con tableros muy grandes (ahora usa un índice y se cuenta una vez por sincronización).
+- **Medios**: los avisos se multiplicaban sin límite; el texto de un comentario borrado seguía en la actividad; un
+  nombre de usuario reutilizado heredaba los comentarios del anterior.
+- **Bajos**: un parámetro de paginación enorme daba error 500; los avisos ignoraban el horario de silencio; una cuenta
+  interna de tamaños quedaba desfasada; los archivos de un tablero borrado se eliminaban antes de confirmar el cambio.
 
 ## Pendiente de ti si la publicas
 

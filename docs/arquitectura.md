@@ -15,7 +15,7 @@
 Todo lo que hay en un tablero es un **registro** con la misma forma:
 
 ```json
-{ "id": "…22 caracteres…", "kind": "board | column | card", "boardId": "…", "updatedAt": 1791000000000,
+{ "id": "…22 caracteres…", "kind": "board | column | card | comment", "boardId": "…", "updatedAt": 1791000000000,
   "deleted": false, "data": { … } }
 ```
 
@@ -23,7 +23,8 @@ Todo lo que hay en un tablero es un **registro** con la misma forma:
 |---|---|
 | `board` | `name`, `color`, `labels[]` (id, nombre, color), `pos` |
 | `column` | `name`, `pos`, `wip` (límite o `null`), `isDone` |
-| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `alertBase`, `reminders[]`, `repeat`, `repeatedAs`, `attachments[]`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
+| `comment` | `cardId`, `text`, `author`, `authorId`, `createdAt`, `editedAt` (autor y fechas los pone el servidor) |
+| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `alertBase`, `reminders[]`, `repeat`, `repeatedAs`, `attachments[]`, `assignees[]`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
 
 - **Orden**: las columnas y las tarjetas se ordenan por `pos`, un número decimal. Insertar entre dos tarjetas usa el
   punto medio; si se agota el hueco, se renumera la columna.
@@ -46,6 +47,7 @@ Tablas de SQLite:
 | `ical_tokens` | Enlace de calendario de cada persona: sha256 del enlace, tableros excluidos, última consulta |
 | `attachments` | Adjuntos: tablero, tarjeta, quién lo subió, nombre, tipo y tamaño. El archivo está en `files/<2 letras>/<id>` |
 | `templates` | Plantillas de tablero de cada persona |
+| `activity` | Actividad de cada tablero: quién (id), qué, tarjeta y su título en ese momento, cuándo |
 
 ## Sincronización
 
@@ -150,6 +152,24 @@ El cliente sincroniza:
   como un evento de 15 minutos a esa hora. Sin alarmas, para no duplicar los avisos de la app.
 - Texto escapado y líneas de 75 octetos como pide el RFC 5545. Como mucho 5.000 eventos.
 
+## Colaboración
+
+- **Responsables**: `assignees[]` de la tarjeta, con nombres de usuario. El servidor deja solo a miembros activos del
+  tablero. La sincronización devuelve, para cada tablero, sus miembros (`people`: usuario y nombre) para mostrarlos.
+- **Comentarios**: son registros más (`kind: "comment"`), así que se sincronizan, funcionan sin conexión y tienen los
+  mismos permisos que las tarjetas (escritura para crear). El servidor fija autor y fechas; solo el autor (por id, no
+  por nombre) edita, y borran el autor o quien gestiona el tablero. Al borrar una tarjeta se borran sus comentarios.
+  Como mucho 500 por tarjeta y 10.000 por tablero.
+- **Actividad**: el servidor la apunta al aplicar los cambios (creada, movida, completada, reabierta, archivada,
+  restaurada, eliminada, fecha, asignada, comentario), una por tarjeta y tipo en cada sincronización y como mucho 200
+  por sincronización. Se guardan 90 días y, como mucho, las 5.000 últimas de cada tablero. Sin el texto de los
+  comentarios.
+- Cada cambio de una sincronización va en su propio *savepoint*: si se rechaza, no deja ni actividad ni avisos.
+- **Avisos**: al asignar a alguien o comentar, se avisa (en segundo plano, después de la sincronización) a quien
+  corresponde, si tiene activados «Asignaciones y comentarios», no ha silenciado el tablero, no está en su horario de
+  silencio y sigue siendo miembro. Un aviso por persona, tarjeta y tipo en cada sincronización; como mucho 20 por
+  sincronización, 60 por hora por quien los provoca y 30 por hora por quien los recibe.
+
 ## Adjuntos
 
 - La app reduce las fotos (2048 px, JPEG) antes de subirlas: pesan menos y pierden el EXIF. Los PDF van tal cual.
@@ -208,6 +228,7 @@ Además:
 | `GET /api/pomo`, `POST /api/pomo/start`, `/stop`, `/log`, `GET /api/pomo/stats` | Pomodoro |
 | `GET /api/ical`, `POST /api/ical/new`, `/revoke`, `/prefs` | Enlace de calendario |
 | `POST /api/files`, `GET`/`DELETE /api/files/<id>` | Adjuntos |
+| `GET /api/boards/<id>/activity?before=<id>` | Actividad del tablero (de 50 en 50) |
 | `GET`/`POST /api/templates`, `DELETE /api/templates/<id>` | Plantillas propias |
 | `GET /api/ical/<token>.ics` | El calendario (sin sesión: el enlace es la credencial) |
 
@@ -220,6 +241,7 @@ Todo salvo `health`, `legal`, `register`, `login`, `recover` y el `.ics` necesit
 | `app/js/main.js` | Arranque, rutas (`#/hoy`, `#/tableros`, `#/tablero/<id>`, `#/calendario`, `#/pomodoro`, `#/buscar`, `#/ajustes`, `#/tarjeta/<id>`) y estructura |
 | `app/js/pomo.js` | Estado del pomodoro, sincronizado con el servidor |
 | `app/js/files.js` | Adjuntos: preparar fotos, subir, mostrar y visor |
+| `app/js/quickadd.js` | Alta rápida: reconoce fecha, hora, tablero, prioridad, responsable y repetición en el título |
 | `app/js/templates.js` | Plantillas incluidas y propias |
 | `app/js/push.js` | Suscripción a los avisos del dispositivo |
 | `app/js/store.js` | Estado en memoria, cambios locales y sincronización |

@@ -39,6 +39,16 @@ al crear la cuenta y, si cambian, se vuelven a pedir.
     los datos acaban en ese servicio. La app recomienda en el iPhone guardarlo «En mi iPhone».
   - Se desactiva a mano, al crear otro, al cambiar la contraseña, al cerrar las demás sesiones y al recuperar la cuenta.
 
+## Comentarios, responsables y actividad
+
+- **Comentarios**: texto, autor y fecha. Los ven los miembros del tablero. Se borran al borrarlos, al borrar la tarjeta
+  o el tablero. Si su autor borra la cuenta, se quedan en el tablero sin autor (como las tarjetas que creó).
+- **Responsables**: el nombre de usuario de las personas asignadas a una tarjeta, visible para los miembros.
+- **Actividad**: quién hizo qué en cada tablero (crear, mover, completar, asignar, comentar…) con el título que tenía la
+  tarjeta en ese momento, pero sin el texto de los comentarios. La ven los miembros del tablero. Se borra a los 90 días
+  (y solo se guardan las 5.000 últimas por tablero). Al borrar la cuenta, sus entradas quedan sin autor. La exportación
+  incluye la actividad propia.
+
 ## Adjuntos y plantillas
 
 - **Adjuntos.** Las fotos se reducen y se vuelven a codificar en el dispositivo antes de subirlas, así que no llegan
