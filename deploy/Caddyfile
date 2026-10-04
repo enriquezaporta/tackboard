@@ -54,8 +54,8 @@
 		}
 	}
 
-	# Que los dispositivos comprueben siempre si hay versión nueva.
-	@nocache path / /index.html /sw.js /manifest.webmanifest /privacy.html /terms.html
+	# Que los dispositivos comprueben siempre si hay versión nueva (con ETag, así que si no cambia no se descarga).
+	@nocache path / /index.html /sw.js /manifest.webmanifest /privacy.html /terms.html /js/* /css/*
 	header @nocache Cache-Control "no-cache"
 
 	handle {

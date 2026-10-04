@@ -1,5 +1,5 @@
 // Service worker: guarda la app para que funcione sin conexión. La API nunca se guarda en caché.
-const VERSION = 'tackboard-1.1.1';
+const VERSION = 'tackboard-1.1.2';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'terms.html', 'manifest.webmanifest',
   'css/app.css', 'css/fonts.css',
@@ -12,7 +12,9 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // cache: 'reload' se salta la caché HTTP del navegador: así una versión nueva nunca mezcla archivos de la anterior.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {

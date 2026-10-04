@@ -1,5 +1,11 @@
 # Cambios
 
+## 1.1.2 — 2026-10-04
+
+- Actualizaciones fiables: al instalar una versión nueva, la app descarga todos sus archivos sin pasar por la caché
+  del navegador, y Caddy pide revalidar JS y CSS. Antes podía quedar algún archivo de la versión anterior
+  (por ejemplo, Ajustes seguía mostrando 1.1.0).
+
 ## 1.1.1 — 2026-10-04
 
 - La hora de vencimiento se ve en el iPhone: un campo de hora vacío salía como una caja en blanco y no se
