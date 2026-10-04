@@ -2,7 +2,7 @@
 import * as S from './store.js';
 import { get, post, del, errorText } from './api.js';
 import { openSheet, confirmDialog, closeSheet } from './ui.js';
-import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor } from './util.js';
+import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS } from './util.js';
 
 const PRIOS = [['', 'Sin prioridad'], ['low', 'Baja'], ['medium', 'Media'], ['high', 'Alta']];
 export const PRIO_NAME = { low: 'Baja', medium: 'Media', high: 'Alta' };
@@ -75,6 +75,12 @@ function renderCard(el, card, sheet) {
         <input id="c-due" class="input" type="date" value="${esc(d.due)}" aria-label="Fecha de vencimiento" ${dis}>
         <input id="c-time" class="input" type="time" value="${esc(d.dueTime)}" aria-label="Hora" ${d.due ? '' : 'disabled'} ${dis}>
         ${d.due && !ro ? `<button type="button" class="btn sm ghost" id="c-nodue">Quitar</button>` : ''}</span></div>
+      <div class="prop"><span class="k">Avisos</span><span class="v">
+        ${d.due ? `<span class="chips">${REMINDERS.map(([k, n]) => `<button type="button" class="chip" data-rem="${k}"
+          aria-pressed="${(d.reminders || []).includes(k)}" ${dis}>${n}</button>`).join('')}</span>
+          ${!d.dueTime ? '<span class="hint">Sin hora: se toma como referencia las 9:00 de ese día.</span>' : ''}
+          ${S.state.notify.prefs && !S.state.notify.prefs.enabled ? '<span class="hint">Tienes los avisos desactivados en Ajustes.</span>' : ''}`
+          : '<span class="muted small">Pon una fecha para poder avisarte.</span>'}</span></div>
       <div class="prop"><span class="k">Inicio</span><span class="v">
         <input id="c-start" class="input" type="date" value="${esc(d.start)}" aria-label="Fecha de inicio" ${dis}></span></div>
       <div class="prop"><span class="k">Prioridad</span><span class="v">
@@ -134,13 +140,19 @@ function renderCard(el, card, sheet) {
   });
   el.querySelector('#c-due').addEventListener('change', (e) => {
     el.querySelector('#c-time').disabled = !e.target.value;
-    patch({ due: e.target.value });
+    // Se repinta para mostrar u ocultar la fila de avisos (sin perder el foco).
+    patch({ due: e.target.value })?.then(() => sheet.refresh());
   });
-  el.querySelector('#c-time').addEventListener('change', (e) => patch({ dueTime: e.target.value }));
-  el.querySelector('#c-nodue')?.addEventListener('click', () => patch({ due: '', dueTime: '' }));
+  el.querySelector('#c-time').addEventListener('change', (e) => patch({ dueTime: e.target.value })?.then(() => sheet.refresh()));
+  el.querySelector('#c-nodue')?.addEventListener('click', () => patch({ due: '', dueTime: '' })?.then(() => sheet.refresh()));
   el.querySelector('#c-start').addEventListener('change', (e) => patch({ start: e.target.value }));
   el.querySelector('#c-prio').addEventListener('change', (e) => patch({ priority: e.target.value }));
   el.querySelector('#c-desc').addEventListener('change', (e) => patch({ description: e.target.value }));
+  el.querySelectorAll('[data-rem]').forEach((btn) => btn.addEventListener('click', () => {
+    const cur = S.record(card.id).data.reminders || [];
+    const k = btn.dataset.rem;
+    patch({ reminders: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] });
+  }));
   el.querySelectorAll('[data-label]').forEach((btn) => btn.addEventListener('click', () => {
     const cur = S.record(card.id).data.labels;
     const id = btn.dataset.label;

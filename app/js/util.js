@@ -45,6 +45,20 @@ export const MONTHS_SHORT = ['ENE', 'FEB', 'MAR', 'ABR', 'MAY', 'JUN', 'JUL', 'A
 export const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Momento de vencimiento en milisegundos (para ordenar y, más adelante, para los avisos). */
+/** Referencia para los avisos: la hora de vencimiento o, en tareas de todo el día, las 9:00 de ese día. */
+export function alertBase(due, time) {
+  if (!due) return null;
+  const d = parseDate(due);
+  if (time) {
+    const [h, m] = time.split(':').map(Number);
+    d.setHours(h, m, 0, 0);
+  } else d.setHours(9, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Recordatorios posibles, en el orden en que se muestran. */
+export const REMINDERS = [['2d', '2 días antes'], ['1d', '1 día antes'], ['3h', '3 h antes'], ['1h', '1 h antes'], ['15m', '15 min antes'], ['due', 'Al vencer']];
+
 export function dueAt(due, time) {
   if (!due) return null;
   const d = parseDate(due);
@@ -122,6 +136,7 @@ const ICONS = {
   inbox: '<path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
   filter: '<path d="M4 5h16l-6 8v5l-4 2v-7z"/>',
   pin: '<path d="M9 3h6l-1 6 4 4H6l4-4z"/><path d="M12 13v8"/>',
+  bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
 };
 export const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 

@@ -27,6 +27,7 @@ export function boardCard(card, board, draggable) {
   const meta = [
     d.due ? `<span class="${late ? 'late' : 'when'}">${late ? `Venció ${esc(lowerDay(dueLabel(d.due, d.dueTime)))}` : esc(dueLabel(d.due, d.dueTime))}</span>` : '',
     checkMeta(d),
+    d.due && !d.done && d.reminders?.length ? `<span class="tag" title="Con aviso">${icon('bell', 's')}</span>` : '',
     d.description ? `<span class="tag" title="Tiene descripción">${icon('text', 's')}</span>` : '',
   ].filter(Boolean).join('');
   return `<button type="button" class="card ${late ? 'overdue' : ''} ${d.done ? 'is-done' : ''}" data-open="${esc(card.id)}"

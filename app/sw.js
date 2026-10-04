@@ -1,5 +1,5 @@
 // Service worker: guarda la app para que funcione sin conexión. La API nunca se guarda en caché.
-const VERSION = 'tackboard-1.0.2';
+const VERSION = 'tackboard-1.1.0';
 const SHELL = [
   './', 'index.html', 'privacy.html', 'terms.html', 'manifest.webmanifest',
   'css/app.css', 'css/fonts.css',
@@ -55,7 +55,9 @@ self.addEventListener('push', (e) => {
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const url = new URL(e.notification.data?.url || '/', self.location.origin).href;
+  let url = new URL(e.notification.data?.url || '/', self.location.origin);
+  if (url.origin !== self.location.origin) url = new URL('/', self.location.origin);
+  url = url.href;
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
     for (const c of list) {
       if (new URL(c.url).origin === self.location.origin) { c.navigate(url).catch(() => {}); return c.focus(); }

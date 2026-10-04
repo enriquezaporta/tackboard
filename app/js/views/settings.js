@@ -1,13 +1,14 @@
 // Ajustes: cuenta, sincronización, apariencia, privacidad y seguridad.
 import * as S from '../store.js';
 import { get, post, errorText, getToken } from '../api.js';
-import { esc, icon, toast } from '../util.js';
+import { esc, icon, toast, REMINDERS } from '../util.js';
 import { confirmDialog, openSheet } from '../ui.js';
 import { openInvitations } from '../sheets.js';
 import { showRecoveryCode } from './auth.js';
 import { pushState, enablePush, disablePush, testPush } from '../push.js';
+const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 
-export const APP_VERSION = '1.0.2';
+export const APP_VERSION = '1.1.0';
 
 function syncText() {
   const s = S.state.sync;
@@ -55,10 +56,10 @@ export function renderSettings(main) {
         <span class="seg" role="group" aria-label="Tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([k, n]) =>
           `<button type="button" data-theme-set="${k}" aria-pressed="${theme === k}">${n}</button>`).join('')}</span></div></div>
 
-      <h2 class="section-title">Avisos (prueba)</h2>
-      <div class="list" id="push-box"><div class="list-row"><span class="grow muted">Comprobando…</span></div></div>
-      <p class="hint">Prueba de las notificaciones en este dispositivo. Los avisos de vencimiento llegarán en la versión 1.1.</p>
     </div><div class="settings-col">
+      <h2 class="section-title">Avisos</h2>
+      <div class="list" id="push-box"><div class="list-row"><span class="grow muted">Comprobando este dispositivo…</span></div></div>
+      ${notifyHtml()}
       <h2 class="section-title">Seguridad</h2>
       <div class="list">
         <button type="button" class="list-row" data-act="pw"><span class="grow">Cambiar contraseña</span>${icon('right', 's')}</button>
@@ -80,6 +81,8 @@ export function renderSettings(main) {
     </div></div></div>`;
 
   renderPush(main);
+  bindNotify(main);
+  if (!S.state.notify.prefs && !prefsRequested) { prefsRequested = true; S.loadNotifyPrefs(); }
 
   main.querySelector('#acc-inv').addEventListener('change', async (e) => {
     try { const r = await post('/api/me', { acceptInvites: e.target.checked }); await S.setUser(r.user); }
@@ -119,11 +122,67 @@ export function renderSettings(main) {
   };
 }
 
+let prefsRequested = false;
+
+function notifyHtml() {
+  const n = S.state.notify;
+  const p = n.prefs;
+  if (!p) return '<p class="hint">Las preferencias de avisos se cargarán al conectar con el servidor.</p>';
+  if (n.available === false) return '<p class="callout warn">El servidor no tiene activados los avisos (falta python3-cryptography).</p>';
+  const sw = (id, on, label, hint = '', dis = '') => `<div class="list-row"><label for="${id}" class="grow">${label}${hint ? `<br><span class="hint">${hint}</span>` : ''}</label>
+    <span class="switch"><input id="${id}" type="checkbox" ${on ? 'checked' : ''} ${dis}><span></span></span></div>`;
+  const boards = S.boards();
+  const dis = p.enabled ? '' : 'disabled';
+  return `<div class="list notify-prefs">
+      ${sw('np-enabled', p.enabled, 'Recibir avisos', 'En todos tus dispositivos con los avisos activados.')}
+      <div class="list-row stack"><span>Recordatorio por defecto<br><span class="hint">Se pone al dar fecha a una tarjeta. Luego puedes cambiarlo en cada una.</span></span>
+        <span class="chips">${REMINDERS.map(([k, label]) => `<button type="button" class="chip" data-defrem="${k}" aria-pressed="${p.defaultReminders.includes(k)}" ${dis}>${label}</button>`).join('')}</span></div>
+      ${sw('np-quiet', p.quiet.on, 'Horario de silencio', 'Lo que toque en ese tiempo se avisa al terminar.', dis)}
+      ${p.quiet.on ? `<div class="list-row times"><label for="np-qs">Desde</label><input id="np-qs" class="input time-input" type="time" value="${esc(p.quiet.start)}" ${dis}>
+        <label for="np-qe">hasta</label><input id="np-qe" class="input time-input" type="time" value="${esc(p.quiet.end)}" ${dis}></div>` : ''}
+      ${sw('np-digest', p.digest.on, 'Resumen diario', 'Cuántas tareas tienes para hoy y cuántas han vencido.', dis)}
+      ${p.digest.on ? `<div class="list-row"><label for="np-dt" class="grow">A las</label><input id="np-dt" class="input time-input" type="time" value="${esc(p.digest.time)}" ${dis}></div>` : ''}
+      <div class="list-row"><span class="grow">Zona horaria<br><span class="hint">Para el horario de silencio y el resumen diario.</span></span>
+        <span class="small muted">${esc(p.tz)}</span>
+        ${deviceTz() && deviceTz() !== p.tz ? `<button type="button" class="btn sm" id="np-tz">Usar ${esc(deviceTz())}</button>` : ''}</div>
+      ${sw('np-titles', p.showTitles, 'Mostrar el título de la tarea', 'Si está desactivado, el aviso solo dice «Tienes una tarea que vence…» y el título no pasa por Apple ni Google.', dis)}
+    </div>
+    ${boards.length ? `<div class="section-title small-title">Por tablero</div><div class="list">${boards.map((b) => `<div class="list-row">
+        <span class="sq" data-c="${esc(b.data.color)}"></span><label for="nb-${esc(b.id)}" class="grow">${esc(b.data.name)}</label>
+        <span class="switch"><input id="nb-${esc(b.id)}" type="checkbox" data-board-mute="${esc(b.id)}" ${p.mutedBoards.includes(b.id) ? '' : 'checked'} ${dis}><span></span></span></div>`).join('')}</div>` : ''}`;
+}
+
+function bindNotify(main) {
+  if (!S.state.notify.prefs) return;
+  const save = async (patch) => {
+    try { await S.setNotifyPrefs(patch); } catch (err) { toast(errorText(err)); S.emit(); }
+  };
+  const on = (sel, fn) => main.querySelector(sel)?.addEventListener('change', fn);
+  on('#np-enabled', (e) => save({ enabled: e.target.checked }));
+  on('#np-quiet', (e) => save({ quiet: { on: e.target.checked } }));
+  on('#np-qs', (e) => e.target.value && save({ quiet: { start: e.target.value } }));
+  on('#np-qe', (e) => e.target.value && save({ quiet: { end: e.target.value } }));
+  on('#np-digest', (e) => save({ digest: { on: e.target.checked } }));
+  on('#np-dt', (e) => e.target.value && save({ digest: { time: e.target.value } }));
+  on('#np-titles', (e) => save({ showTitles: e.target.checked }));
+  main.querySelector('#np-tz')?.addEventListener('click', () => save({ tz: deviceTz() }));
+  main.querySelectorAll('[data-defrem]').forEach((b) => b.addEventListener('click', () => {
+    const k = b.dataset.defrem;
+    const cur = S.state.notify.prefs.defaultReminders;
+    save({ defaultReminders: cur.includes(k) ? cur.filter((x) => x !== k) : [...cur, k] });
+  }));
+  main.querySelectorAll('[data-board-mute]').forEach((cb) => cb.addEventListener('change', () => {
+    const id = cb.dataset.boardMute;
+    const cur = S.state.notify.prefs.mutedBoards.filter((x) => x !== id);
+    save({ mutedBoards: cb.checked ? cur : [...cur, id] });
+  }));
+}
+
 const PUSH_TEXT = {
   unsupported: 'Este navegador no admite notificaciones push.',
   install: 'En iPhone y iPad los avisos solo funcionan con la app instalada: Safari → Compartir → Añadir a pantalla de inicio, y ábrela desde el icono.',
   denied: 'Has bloqueado las notificaciones. Actívalas en los ajustes del dispositivo (en iPhone: Ajustes → Notificaciones → Tackboard).',
-  off: 'Los avisos están desactivados en este dispositivo.',
+  off: 'Este dispositivo no recibe avisos.',
   on: 'Este dispositivo recibe avisos.',
 };
 
@@ -136,8 +195,8 @@ async function renderPush(main) {
   box.innerHTML = `<div class="list-row"><span class="sync-dot ${st === 'on' ? 'ok' : st === 'off' ? '' : 'error'}"></span>
       <span class="grow">${esc(PUSH_TEXT[st])}</span></div>
     ${st === 'off' ? `<div class="list-row"><button type="button" class="btn primary block" data-push="on">Activar en este dispositivo</button></div>` : ''}
-    ${st === 'on' ? `<div class="list-row"><button type="button" class="btn primary grow" data-push="test">Enviar aviso de prueba</button>
-      <button type="button" class="btn" data-push="off">Desactivar</button></div>` : ''}`;
+    ${st === 'on' ? `<div class="list-row"><button type="button" class="btn grow" data-push="test">Enviar aviso de prueba</button>
+      <button type="button" class="btn" data-push="off">Desactivar aquí</button></div>` : ''}`;
   box.querySelectorAll('[data-push]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;
     try {
@@ -218,6 +277,8 @@ async function deleteAccount() {
 }
 
 async function logout() {
+  // Este dispositivo deja de recibir avisos de esta cuenta.
+  try { await disablePush(); } catch { /* sin conexión o sin avisos */ }
   const pending = S.state.pending;
   if (pending) {
     await S.sync();

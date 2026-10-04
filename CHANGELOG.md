@@ -1,5 +1,20 @@
 # Cambios
 
+## 1.1.0 — 2026-10-04
+
+- **Avisos de vencimiento**: en cada tarjeta con fecha se eligen uno o varios recordatorios (2 días, 1 día, 3 h, 1 h o
+  15 min antes, o al vencer). Las tareas sin hora usan como referencia las 9:00 de ese día.
+- Recordatorio por defecto (1 h antes) que se pone solo al dar fecha a una tarjeta, configurable en Ajustes.
+- Desactivar los avisos en general, por tablero (útil en tableros compartidos) o en cada tarjeta.
+- **Horario de silencio**: lo que toque dentro se avisa al terminar.
+- **Resumen diario** opcional a la hora elegida, con las tareas de hoy y las vencidas.
+- Por privacidad, el aviso no incluye el título salvo que se active en Ajustes.
+- Los avisos se recalculan si la tarea se completa, se archiva o cambia de fecha, y nunca se repiten.
+- Al tocar un aviso se abre la tarjeta.
+- En tableros compartidos, los recordatorios de la tarjeta avisan a todos los miembros que no hayan silenciado el tablero.
+- Si vencen muchas tareas a la vez, los avisos que pasan del tope por hora llegan agrupados en un resumen en vez de perderse.
+- Una suscripción solo se borra si su servicio la da por caducada o si lleva 3 días fallando.
+
 ## 1.0.2 — 2026-10-04
 
 - Base de los avisos (Web Push): el servidor genera sus claves VAPID, guarda las suscripciones de cada dispositivo

@@ -83,6 +83,34 @@ El cliente sincroniza:
 - 1,5 s después de cada cambio;
 - cada minuto mientras está visible.
 
+## Avisos
+
+```
+ tarjeta: alertBase + reminders ──▶ planificador (cada 30 s) ──▶ notify_log ──▶ Web Push ──▶ Apple / Google ──▶ dispositivo
+```
+
+- **Datos de la tarjeta**: además de la fecha, `alertBase` (el instante de referencia: la hora de vencimiento o las
+  9:00 si es de todo el día, calculado en el dispositivo con su zona horaria) y `reminders` (`2d`, `1d`, `3h`, `1h`,
+  `15m`, `due`).
+- **Preferencias de cada usuario** (`notify_prefs`): avisos sí o no, recordatorio por defecto, horario de silencio,
+  resumen diario, mostrar títulos, tableros silenciados y zona horaria.
+- **Planificador** (un hilo del servidor). Cada 30 segundos:
+  1. busca los recordatorios cuyo momento cae desde la revisión anterior hasta ahora (como mucho 5.000 nuevos por
+     revisión; si hay más, sigue en la siguiente desde ese punto), y los apunta en `notify_log`
+     para cada miembro del tablero que los quiere. Si cae en su horario de silencio, la entrega se aplaza al final del
+     silencio. La clave única (usuario, tarjeta, tipo, momento) impide repetirlos;
+  2. entrega los que ya tocan, comprobando antes que la tarea sigue pendiente, con la misma fecha y el mismo
+     recordatorio. Si no, se anulan. Hay topes por hora (por persona y tablero, y por persona) y por revisión; lo que
+     no cabe en una revisión espera a la siguiente y lo que pasa del tope por hora se agrupa en un aviso-resumen;
+  3. manda el resumen diario a quien lo tenga activado, una vez al día;
+  4. borra el registro con más de 3 días.
+- En tableros compartidos entre zonas horarias distintas, las tareas de todo el día avisan según las 9:00 de quien
+  puso o cambió la fecha (los recordatorios son de la tarjeta, no de cada persona).
+- Tras un reinicio se recuperan los avisos de los últimos 30 minutos. Un aviso que no se ha podido entregar en
+  12 horas se descarta.
+- **Envío**: cifrado para cada dispositivo (RFC 8291) y firmado con la clave VAPID de la instalación (RFC 8292). El
+  service worker muestra la notificación y, al tocarla, abre `#/tarjeta/<id>`.
+
 ## Permisos
 
 Se comprueban **siempre en el servidor**, registro a registro. La interfaz solo oculta lo que no se puede hacer.

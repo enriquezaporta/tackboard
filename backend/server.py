@@ -33,6 +33,8 @@ Endpoints. Todos salvo health, legal, register, login y recover piden "Authoriza
   POST /api/push/subscribe   {endpoint, keys:{p256dh, auth}}
   POST /api/push/unsubscribe {endpoint}
   POST /api/push/test                           envía un aviso de prueba a los dispositivos del usuario
+  GET  /api/push/prefs                          preferencias de avisos (silencio, resumen, títulos…)
+  POST /api/push/prefs   {campos a cambiar}
 
 Los avisos (Web Push) necesitan el paquete python3-cryptography. Sin él, el resto funciona igual.
 
@@ -59,10 +61,16 @@ import sys
 import threading
 import time
 from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # pragma: no cover
+    ZoneInfo = None
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote, urlparse
 
-VERSION = "1.0.2"
+VERSION = "1.1.0"
 POLICY_VERSION = "2026-10"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")
@@ -103,6 +111,9 @@ SHORT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 COLOR_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+TZ_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z0-9_+-]+){0,2}$")
+# Recordatorios posibles en una tarjeta: minutos antes del momento de referencia.
+REMINDERS = {"2d": 2880, "1d": 1440, "3h": 180, "1h": 60, "15m": 15, "due": 0}
 # Caracteres de control y de dirección de texto (permiten engañar en pantalla o en la terminal).
 CONTROL_RE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 CONTROL_LINE_RE = re.compile("[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
@@ -175,9 +186,30 @@ CREATE TABLE IF NOT EXISTS push_subs (
   p256dh TEXT NOT NULL,
   auth TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  last_ok INTEGER
+  last_ok INTEGER,
+  token_hash TEXT,
+  fails INTEGER NOT NULL DEFAULT 0,
+  fail_since INTEGER
 );
 CREATE INDEX IF NOT EXISTS push_subs_user ON push_subs(user_id);
+-- Preferencias de avisos de cada usuario.
+CREATE TABLE IF NOT EXISTS notify_prefs (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  data TEXT NOT NULL
+);
+-- Avisos ya programados o enviados (evita repetirlos). Se limpian a los pocos días.
+CREATE TABLE IF NOT EXISTS notify_log (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  card_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  fire_at INTEGER NOT NULL,
+  deliver_at INTEGER NOT NULL,
+  state INTEGER NOT NULL DEFAULT 0,
+  sent_at INTEGER,
+  UNIQUE (user_id, card_id, kind, fire_at)
+);
+CREATE INDEX IF NOT EXISTS notify_log_pending ON notify_log(state, deliver_at);
 -- Ajustes internos (claves VAPID).
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -206,6 +238,16 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA secure_delete=ON")
         self.db.executescript(SCHEMA)
+        # Migraciones de versiones anteriores.
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(push_subs)")}
+        if "token_hash" not in cols:
+            self.db.execute("ALTER TABLE push_subs ADD COLUMN token_hash TEXT")
+        if "fails" not in cols:
+            self.db.execute("ALTER TABLE push_subs ADD COLUMN fails INTEGER NOT NULL DEFAULT 0")
+        if "fail_since" not in cols:
+            self.db.execute("ALTER TABLE push_subs ADD COLUMN fail_since INTEGER")
+        if "sent_at" not in {r[1] for r in self.db.execute("PRAGMA table_info(notify_log)")}:
+            self.db.execute("ALTER TABLE notify_log ADD COLUMN sent_at INTEGER")
         try:
             os.chmod(path, 0o600)
         except OSError:
@@ -470,6 +512,26 @@ def clean_card(d):
         out_check.append({"id": iid, "text": v_str(it.get("text"), 300, "checklist"), "done": v_bool(it.get("done"), "checklist")})
     due = v_date(d.get("due"), "due")
     due_time = v_time(d.get("dueTime"), "dueTime") if due else ""
+    due_at = v_int_or_none(d.get("dueAt"), "dueAt", 0, 10 ** 14) if due else None
+    alert_base = v_int_or_none(d.get("alertBase"), "alertBase", 0, 10 ** 14) if due else None
+    if due:
+        y, mo, dd = (int(x) for x in due.split("-"))
+        hh, mm = (int(x) for x in due_time.split(":")) if due_time else (23, 59)
+        nominal = int(datetime(y, mo, dd, hh, mm, tzinfo=timezone.utc).timestamp() * 1000)
+        if due_at is not None and abs(due_at - nominal) > 14 * 3600_000:
+            raise Invalid("dueAt")
+        if alert_base is not None:
+            if due_time and due_at is not None and alert_base != due_at:
+                raise Invalid("alertBase")
+            nominal_alert = nominal if due_time else int(datetime(y, mo, dd, 9, 0, tzinfo=timezone.utc).timestamp() * 1000)
+            if abs(alert_base - nominal_alert) > 14 * 3600_000:
+                raise Invalid("alertBase")
+    reminders = d.get("reminders")
+    if reminders is not None:
+        if not isinstance(reminders, list) or len(reminders) > len(REMINDERS) or \
+                not all(isinstance(x, str) and x in REMINDERS for x in reminders):
+            raise Invalid("reminders")
+        reminders = [k for k in REMINDERS if k in reminders]  # orden fijo y sin repetidos
     return {
         "columnId": v_ref(d.get("columnId"), "columnId", allow_none=False),
         "title": v_str(d.get("title"), 200, "title", allow_empty=False),
@@ -477,7 +539,10 @@ def clean_card(d):
         "start": v_date(d.get("start"), "start"),
         "due": due,
         "dueTime": due_time,
-        "dueAt": v_int_or_none(d.get("dueAt"), "dueAt", 0, 10 ** 14) if due else None,
+        "dueAt": due_at,
+        # Momento de referencia para los avisos: la hora de vencimiento o, si es de todo el día, las 9:00 de ese día.
+        "alertBase": alert_base,
+        "reminders": reminders,
         "priority": prio,
         "labels": list(dict.fromkeys(labels)),
         "checklist": out_check,
@@ -571,21 +636,75 @@ def encrypt_push(payload, p256dh, auth):
     return salt + (4096).to_bytes(4, "big") + bytes([len(as_public)]) + as_public + body
 
 
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Un servicio de avisos nunca redirige: si lo hace, se trata como fallo (y no se sigue a otra dirección)."""
+
+    def redirect_request(self, *a, **kw):
+        return None
+
+
+_PUSH_OPENER = urllib.request.build_opener(_NoRedirect)
+PUSH_TIMEOUT = 5
+SUB_MAX_FAILS = 5
+SUB_FAIL_WINDOW = 3 * 86400          # s: una suscripción se borra si lleva 3 días fallando (y al menos 5 fallos)
+
+
 def send_push(vapid, sub, payload, subject, ttl=3600, urgency="normal", opener=None):
-    """Envía un aviso. Devuelve el código HTTP del servicio (201 = aceptado; 404/410 = suscripción caducada)."""
-    import urllib.error
-    import urllib.request
+    """Envía un aviso. Devuelve el código HTTP del servicio (201 = aceptado; 404/410 = suscripción caducada;
+    0 = sin respuesta)."""
     data = encrypt_push(json.dumps(payload, ensure_ascii=False).encode(), sub["p256dh"], sub["auth"])
     req = urllib.request.Request(sub["endpoint"], data=data, method="POST", headers={
         "TTL": str(ttl), "Urgency": urgency, "Content-Encoding": "aes128gcm",
         "Content-Type": "application/octet-stream", "Authorization": vapid.header(sub["endpoint"], subject)})
     try:
-        with (opener or urllib.request.urlopen)(req, timeout=10) as res:
+        with (opener or _PUSH_OPENER.open)(req, timeout=PUSH_TIMEOUT) as res:
             return res.status
     except urllib.error.HTTPError as e:
         return e.code
     except Exception:
         return 0
+
+
+def send_to_subs(store, vapid, subs, payload, subject, opener=None, ttl=6 * 3600, urgency="high"):
+    """Envía a varios dispositivos a la vez y actualiza su estado: los caducados (404/410) se borran, y los que
+    llevan más de SUB_FAIL_WINDOW fallando (con al menos SUB_MAX_FAILS fallos), también. Así un corte de red
+    corto no borra suscripciones buenas. Devuelve [(sub, status)]."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not subs:
+        return []
+    with ThreadPoolExecutor(max_workers=min(5, len(subs))) as ex:
+        statuses = list(ex.map(lambda sb: send_push(vapid, sb, payload, subject, ttl, urgency, opener), subs))
+    t = now()
+    with store.lock:
+        for sb, st in zip(subs, statuses):
+            since = sb.get("fail_since")
+            if st in (404, 410) or (not 200 <= st < 300 and st != 429 and since is not None
+                                    and t - since >= SUB_FAIL_WINDOW and (sb.get("fails") or 0) + 1 >= SUB_MAX_FAILS):
+                store.x("DELETE FROM push_subs WHERE id=?", (sb["id"],))
+            elif 200 <= st < 300:
+                store.x("UPDATE push_subs SET last_ok=?, fails=0, fail_since=NULL WHERE id=?", (t, sb["id"]))
+            elif st != 429:
+                store.x("UPDATE push_subs SET fails=fails+1, fail_since=COALESCE(fail_since, ?) WHERE id=?", (t, sb["id"]))
+    return list(zip(subs, statuses))
+
+
+def active_subs(store, uid):
+    """Dispositivos de un usuario cuya sesión sigue abierta y cuya cuenta está activa."""
+    return [dict(r) for r in store.q(
+        """SELECT s.* FROM push_subs s JOIN tokens t ON t.hash=s.token_hash JOIN users u ON u.id=s.user_id
+           WHERE s.user_id=? AND u.disabled=0""", (uid,))]
+
+
+def norm_endpoint(u):
+    """Forma canónica de la dirección de suscripción (la misma al darse de alta y de baja)."""
+    path = u.path or "/"
+    if u.params:
+        path += ";" + u.params
+    return "https://%s%s%s" % (u.hostname.lower(), path, ("?" + u.query) if u.query else "")
 
 
 def valid_subscription(body):
@@ -594,9 +713,17 @@ def valid_subscription(body):
     p256dh, auth = keys.get("p256dh"), keys.get("auth")
     if not isinstance(endpoint, str) or len(endpoint) > 1024 or not endpoint.startswith("https://"):
         raise ApiError(400, "push_endpoint")
-    host = (urlparse(endpoint).hostname or "").lower()
-    if not PUSH_HOSTS.match(host):
+    try:
+        u = urlparse(endpoint)
+        port = u.port
+    except ValueError:
         raise ApiError(400, "push_endpoint")
+    # Solo https al puerto 443, sin usuario ni contraseña y con un nombre de servidor conocido.
+    if u.scheme != "https" or u.username or u.password or "@" in u.netloc or port not in (None, 443) \
+            or not re.match(r"^[A-Za-z0-9.-]+(:443)?$", u.netloc) or not PUSH_HOSTS.match((u.hostname or "").lower()) \
+            or re.search(r"[\s\\#]", endpoint):
+        raise ApiError(400, "push_endpoint")
+    endpoint = norm_endpoint(u)
     try:
         if len(b64u_dec(p256dh)) != 65 or len(b64u_dec(auth)) != 16:
             raise ValueError
@@ -604,6 +731,399 @@ def valid_subscription(body):
     except Exception:
         raise ApiError(400, "push_keys")
     return endpoint, p256dh, auth
+
+
+# ----------------------------------------------------------------------------------------------------
+# Preferencias de avisos y planificador
+# ----------------------------------------------------------------------------------------------------
+
+DEFAULT_PREFS = {
+    "enabled": True,                 # recibir avisos en mis dispositivos
+    "defaultReminders": ["1h"],      # recordatorio que se pone al dar fecha a una tarjeta
+    "quiet": {"on": False, "start": "23:00", "end": "08:00"},
+    "digest": {"on": False, "time": "08:00"},
+    "showTitles": False,             # mostrar el título de la tarea en el aviso
+    "mutedBoards": [],               # tableros silenciados
+    "tz": "UTC",
+}
+LATE_LIMIT_MS = 12 * 3600 * 1000     # un aviso que no se pudo entregar en 12 h ya no se envía
+REPEAT_GAP_MS = 30 * 60 * 1000       # el mismo recordatorio de la misma tarjeta, como mucho cada 30 min
+BOARD_HOURLY_CAP = 20                # avisos sueltos por persona, tablero y hora
+USER_HOURLY_CAP = 40                 # avisos sueltos por persona y hora, sumando todos los tableros
+USER_TICK_CAP = 10                   # avisos sueltos por persona en cada revisión
+SUMMARY_GAP_MS = 10 * 60 * 1000      # lo que pase de los topes se agrupa en un aviso-resumen, como mucho cada 10 min
+SCHEDULE_TICK_CAP = 5000             # avisos nuevos programados por revisión; el resto, en la siguiente (no se pierden)
+DIGEST_GAP_MS = 20 * 3600 * 1000
+SCAN_BACKLOG_MS = 30 * 60 * 1000     # tras un reinicio, se recuperan los avisos de los últimos 30 min
+MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre",
+             "octubre", "noviembre", "diciembre"]
+DOW_ES = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+
+
+def get_tz(name):
+    if ZoneInfo and isinstance(name, str) and TZ_RE.match(name):
+        try:
+            return ZoneInfo(name)
+        except Exception:
+            pass
+    return timezone.utc
+
+
+def load_prefs(store, uid):
+    row = store.one("SELECT data FROM notify_prefs WHERE user_id=?", (uid,))
+    prefs = json.loads(json.dumps(DEFAULT_PREFS))
+    if row:
+        try:
+            saved = json.loads(row["data"])
+            for k in DEFAULT_PREFS:
+                if k in saved:
+                    prefs[k] = saved[k]
+            prefs["lastDigest"] = saved.get("lastDigest", "")
+            prefs["lastDigestAt"] = saved.get("lastDigestAt", 0)
+        except ValueError:
+            pass
+    return prefs
+
+
+def save_prefs(store, uid, prefs):
+    store.x("INSERT INTO notify_prefs(user_id,data) VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET data=excluded.data",
+            (uid, json.dumps(prefs, separators=(",", ":"))))
+
+
+def clean_prefs(body, prefs):
+    """Aplica a `prefs` los campos válidos de `body`. Lanza ApiError si alguno no lo es."""
+    out = json.loads(json.dumps(prefs))
+    if "enabled" in body:
+        out["enabled"] = body["enabled"] is True
+    if "showTitles" in body:
+        out["showTitles"] = body["showTitles"] is True
+    if "defaultReminders" in body:
+        r = body["defaultReminders"]
+        if not isinstance(r, list) or not all(isinstance(x, str) and x in REMINDERS for x in r):
+            raise ApiError(400, "prefs")
+        out["defaultReminders"] = [k for k in REMINDERS if k in r]
+    for key, fields in (("quiet", ("start", "end")), ("digest", ("time",))):
+        if key in body:
+            v = body[key]
+            if not isinstance(v, dict):
+                raise ApiError(400, "prefs")
+            cur = dict(out[key])
+            if "on" in v:
+                cur["on"] = v["on"] is True
+            for f in fields:
+                if f in v:
+                    if not isinstance(v[f], str) or not TIME_RE.match(v[f]):
+                        raise ApiError(400, "prefs")
+                    cur[f] = v[f]
+            out[key] = cur
+    if "mutedBoards" in body:
+        m = body["mutedBoards"]
+        if not isinstance(m, list) or len(m) > MAX_MEMBERSHIPS or not all(isinstance(x, str) and ID_RE.match(x) for x in m):
+            raise ApiError(400, "prefs")
+        out["mutedBoards"] = list(dict.fromkeys(m))
+    if "tz" in body:
+        tz = body["tz"]
+        if not isinstance(tz, str) or not TZ_RE.match(tz) or get_tz(tz) is timezone.utc and tz not in ("UTC", "Etc/UTC"):
+            raise ApiError(400, "prefs")
+        out["tz"] = tz
+    return out
+
+
+def _hm(s):
+    h, m = s.split(":")
+    return int(h) * 60 + int(m)
+
+
+def quiet_deliver(fire_ms, prefs):
+    """Si `fire_ms` cae en el horario de silencio, devuelve el final de ese silencio; si no, `fire_ms`."""
+    q = prefs.get("quiet") or {}
+    if not q.get("on"):
+        return fire_ms
+    tz = get_tz(prefs.get("tz"))
+    local = datetime.fromtimestamp(fire_ms / 1000, tz)
+    mins = local.hour * 60 + local.minute
+    start, end = _hm(q.get("start", "23:00")), _hm(q.get("end", "08:00"))
+    if start == end:
+        return fire_ms
+    inside = (start <= mins < end) if start < end else (mins >= start or mins < end)
+    if not inside:
+        return fire_ms
+    day = local.date()
+    if start > end and mins >= start:  # el silencio cruza la medianoche: termina mañana
+        day = day + timedelta(days=1)
+    end_dt = datetime(day.year, day.month, day.day, end // 60, end % 60, tzinfo=tz)
+    return int(end_dt.timestamp() * 1000)
+
+
+def due_text(card, now_ms, tz):
+    """Texto relativo del vencimiento ("vence en 15 min", "vence mañana a las 10:00", "ha vencido"…)."""
+    now = datetime.fromtimestamp(now_ms / 1000, tz)
+    try:
+        y, m, d = (int(x) for x in card["due"].split("-"))
+        due_day = datetime(y, m, d, tzinfo=tz).date()
+    except Exception:
+        return "vence pronto"
+    days = (due_day - now.date()).days
+    if not card.get("dueTime"):
+        if days < 0:
+            return "ha vencido"
+        if days == 0:
+            return "vence hoy"
+        if days == 1:
+            return "vence mañana"
+        return "vence el %s %d" % (DOW_ES[due_day.weekday()], due_day.day)
+    diff = round((card.get("dueAt") or now_ms) - now_ms) / 60000
+    hhmm = card["dueTime"]
+    if diff <= 0:
+        return "ha vencido" if diff > -5 else "venció a las %s" % hhmm
+    if diff < 60:
+        return "vence en %d min" % max(1, round(diff))
+    if days == 0:
+        return "vence hoy a las %s" % hhmm
+    if days == 1:
+        return "vence mañana a las %s" % hhmm
+    return "vence el %d de %s a las %s" % (due_day.day, MONTHS_ES[due_day.month - 1], hhmm)
+
+
+class Notifier:
+    """Revisa cada medio minuto qué recordatorios tocan, los programa (respetando el silencio de cada
+    persona) y los envía una sola vez. También manda el resumen diario."""
+
+    def __init__(self, app):
+        self.app = app
+        self.s = app.s
+        self.last_cleanup = 0
+        self.last_summary = {}  # uid -> último resumen (en memoria: tras reiniciar, como mucho uno de más)
+
+    def subs(self, uid):
+        return active_subs(self.s, uid)
+
+    def tick(self, now_ms=None):
+        now_ms = now_ms or now_ms_()
+        outbox = []  # (uid, payload)
+        with self.s.lock:
+            self.s.x("BEGIN IMMEDIATE")
+            try:
+                self.schedule(now_ms)
+                outbox += self.collect(now_ms)
+                outbox += self.digests(now_ms)
+                if now_ms - self.last_cleanup > 3600_000:
+                    self.s.x("DELETE FROM notify_log WHERE deliver_at < ?", (now_ms - 3 * 86400_000,))
+                    # Suscripciones de sesiones que ya no existen.
+                    self.s.x("DELETE FROM push_subs WHERE token_hash IS NULL OR token_hash NOT IN (SELECT hash FROM tokens)")
+                    self.last_cleanup = now_ms
+                self.s.x("COMMIT")
+            except Exception:
+                self.s.x("ROLLBACK")
+                raise
+        sent = 0
+        for uid, payload in outbox:
+            sent += self.deliver(uid, payload)
+        return sent
+
+    def schedule(self, now_ms):
+        row = self.s.one("SELECT value FROM settings WHERE key='notify_scan'")
+        last = int(row["value"]) if row else now_ms - 60_000
+        start = max(last, now_ms - SCAN_BACKLOG_MS)
+        max_off = max(REMINDERS.values()) * 60000
+        rows = self.s.q(
+            """SELECT id, board_id, data FROM records WHERE kind='card' AND deleted=0
+               AND json_extract(data,'$.alertBase') > ? AND json_extract(data,'$.alertBase') <= ?""",
+            (start, now_ms + max_off))
+        fires = []  # (momento, tarjeta, tablero, recordatorio)
+        for r in rows:
+            d = json.loads(r["data"])
+            if d.get("done") or d.get("archived") or not d.get("reminders") or not d.get("alertBase"):
+                continue
+            for k in d["reminders"]:
+                f = d["alertBase"] - REMINDERS[k] * 60000
+                if start < f <= now_ms:
+                    fires.append((f, r["id"], r["board_id"], k))
+        fires.sort()
+        has_subs = {r["user_id"] for r in self.s.q(
+            """SELECT DISTINCT s.user_id FROM push_subs s JOIN tokens t ON t.hash=s.token_hash
+               JOIN users u ON u.id=s.user_id WHERE u.disabled=0""")}
+        prefs_cache, members_cache = {}, {}
+        created, cursor = 0, now_ms
+        for fire, cid, bid, kind in fires:
+            if created >= SCHEDULE_TICK_CAP:
+                # Demasiados de golpe: se sigue en la siguiente revisión desde aquí. Los ya programados se
+                # ignoran (UNIQUE), así que siempre se avanza.
+                cursor = fire - 1
+                break
+            if bid not in members_cache:
+                members_cache[bid] = [m["user_id"] for m in self.s.q(
+                    "SELECT user_id FROM members WHERE board_id=? AND status='active'", (bid,))]
+            for uid in members_cache[bid]:
+                if uid not in has_subs:
+                    continue
+                if uid not in prefs_cache:
+                    prefs_cache[uid] = load_prefs(self.s, uid)
+                p = prefs_cache[uid]
+                if not p["enabled"] or bid in p["mutedBoards"]:
+                    continue
+                # Si la fecha cambia una y otra vez, el mismo recordatorio no se envía más de una vez cada 30 min.
+                if self.s.one("""SELECT 1 FROM notify_log WHERE user_id=? AND card_id=? AND kind=? AND state IN (1,5)
+                                 AND fire_at>? AND fire_at<>?""", (uid, cid, kind, fire - REPEAT_GAP_MS, fire)):
+                    continue
+                cur = self.s.x("""INSERT OR IGNORE INTO notify_log(user_id,card_id,kind,fire_at,deliver_at,state)
+                                  VALUES(?,?,?,?,?,0)""", (uid, cid, kind, fire, quiet_deliver(fire, p)))
+                created += cur.rowcount
+        self.s.x("INSERT INTO settings(key,value) VALUES('notify_scan',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                 (str(cursor),))
+
+    def collect(self, now_ms):
+        """Avisos programados que ya tocan. Se comprueba de nuevo que siguen siendo válidos. Nunca se pierde uno
+        en silencio: lo que pase de los topes por tablero y por persona se agrupa en un aviso-resumen."""
+        out = []
+        # Por turnos: como mucho 500 por persona en cada revisión, para que nadie acapare el trabajo.
+        pending = self.s.q("""SELECT * FROM (SELECT *, ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY deliver_at) AS rn
+                                FROM notify_log WHERE state=0 AND deliver_at<=?) WHERE rn<=500 ORDER BY deliver_at LIMIT 5000""",
+                           (now_ms,))
+        prefs, ok_user, member = {}, {}, {}
+        valid = {}  # uid -> [(fila, tablero, datos)]
+        for n in pending:
+            uid = n["user_id"]
+            if uid not in prefs:
+                prefs[uid] = load_prefs(self.s, uid)
+                row = self.s.one("SELECT disabled FROM users WHERE id=?", (uid,))
+                ok_user[uid] = row is not None and not row["disabled"]
+            p = prefs[uid]
+            rec = self.s.one("SELECT board_id, data FROM records WHERE id=? AND kind='card' AND deleted=0", (n["card_id"],))
+            state = 2
+            if now_ms - n["deliver_at"] > LATE_LIMIT_MS:
+                state = 3
+            elif rec and ok_user[uid] and p["enabled"] and rec["board_id"] not in p["mutedBoards"]:
+                d = json.loads(rec["data"])
+                key = (uid, rec["board_id"])
+                if key not in member:
+                    member[key] = bool(self.s.one("SELECT 1 FROM members WHERE board_id=? AND user_id=? AND status='active'", key[::-1]))
+                if (member[key] and not d.get("done") and not d.get("archived") and n["kind"] in (d.get("reminders") or [])
+                        and d.get("alertBase") and d["alertBase"] - REMINDERS[n["kind"]] * 60000 == n["fire_at"]):
+                    valid.setdefault(uid, []).append((n, rec["board_id"], d))
+                    continue
+            self.s.x("UPDATE notify_log SET state=? WHERE id=?", (state, n["id"]))
+        for uid, items in valid.items():
+            out += self.deliver_user(uid, items, prefs[uid], now_ms)
+        return out
+
+    def deliver_user(self, uid, items, p, now_ms):
+        """Reparte los avisos de una persona: sueltos hasta los topes (por turnos entre tableros) y el resto en un resumen."""
+        out = []
+        per_board = {r["board_id"]: r["c"] for r in self.s.q(
+            """SELECT r.board_id, COUNT(*) AS c FROM notify_log n JOIN records r ON r.id=n.card_id
+               WHERE n.user_id=? AND n.state=1 AND n.sent_at>? GROUP BY r.board_id""", (uid, now_ms - 3600_000))}
+        total = sum(per_board.values())
+        # Por turnos entre tableros: un tablero con muchas tarjetas (por ejemplo, de otra persona) no tapa a los demás.
+        queues = {}
+        for it in items:
+            queues.setdefault(it[1], []).append(it)
+        order = []
+        while queues:
+            for bid in list(queues):
+                order.append(queues[bid].pop(0))
+                if not queues[bid]:
+                    del queues[bid]
+        # Dentro de los topes por hora: sueltos (los que no caben en esta revisión esperan a la siguiente, 30 s).
+        # Fuera de los topes: al resumen.
+        single, rest = [], []
+        for it in order:
+            bid = it[1]
+            if total < USER_HOURLY_CAP and per_board.get(bid, 0) < BOARD_HOURLY_CAP:
+                per_board[bid] = per_board.get(bid, 0) + 1
+                total += 1
+                if len(single) < USER_TICK_CAP:
+                    single.append(it)
+            else:
+                rest.append(it)
+        tz = get_tz(p["tz"])
+        for n, bid, d in single:
+            self.s.x("UPDATE notify_log SET state=1, sent_at=? WHERE id=?", (now_ms, n["id"]))
+            text = due_text(d, now_ms, tz)
+            if p["showTitles"]:
+                bname = self.app.board_name(bid)[0] or "Tackboard"
+                payload = {"title": bname, "body": "«%s» %s" % (d["title"][:120], text)}
+            else:
+                payload = {"title": "Tackboard", "body": "Tienes una tarea que %s" % text}
+            payload.update({"tag": "card-" + n["card_id"], "url": "/#/tarjeta/" + n["card_id"]})
+            out.append((uid, payload))
+        # El resto se agrupa. Si hace poco que se mandó un resumen, esperan en cola al siguiente (no se pierden).
+        if rest and now_ms - self.last_summary.get(uid, 0) >= SUMMARY_GAP_MS:
+            self.last_summary[uid] = now_ms
+            for n, _, _ in rest:
+                self.s.x("UPDATE notify_log SET state=5, sent_at=? WHERE id=?", (now_ms, n["id"]))
+            cards = len({n["card_id"] for n, _, _ in rest})
+            boards = {bid for _, bid, _ in rest}
+            what = "1 tarea más" if cards == 1 else "%d tareas más" % cards
+            body = "Tienes %s que %s pronto o ya ha%s vencido." % (what, "vence" if cards == 1 else "vencen",
+                                                                  "" if cards == 1 else "n")
+            title = "Tackboard"
+            if p["showTitles"] and len(boards) == 1:
+                title = self.app.board_name(next(iter(boards)))[0] or "Tackboard"
+            out.append((uid, {"title": title, "body": body, "tag": "tackboard-summary", "url": "/#/hoy"}))
+        return out
+
+    def digests(self, now_ms):
+        out = []
+        for r in self.s.q("SELECT user_id FROM notify_prefs"):
+            uid = r["user_id"]
+            p = load_prefs(self.s, uid)
+            dg = p.get("digest") or {}
+            if not p["enabled"] or not dg.get("on"):
+                continue
+            tz = get_tz(p["tz"])
+            local = datetime.fromtimestamp(now_ms / 1000, tz)
+            today = local.date().isoformat()
+            if p.get("lastDigest") == today or local.hour * 60 + local.minute < _hm(dg.get("time", "08:00")) \
+                    or now_ms - (p.get("lastDigestAt") or 0) < DIGEST_GAP_MS:
+                continue
+            urow = self.s.one("SELECT disabled FROM users WHERE id=?", (uid,))
+            if not urow or urow["disabled"]:
+                continue
+            boards = [m["board_id"] for m in self.s.q(
+                "SELECT board_id FROM members WHERE user_id=? AND status='active'", (uid,)) if m["board_id"] not in p["mutedBoards"]]
+            n_today = n_late = 0
+            for bid in boards:
+                for c in self.s.q("SELECT data FROM records WHERE board_id=? AND kind='card' AND deleted=0", (bid,)):
+                    d = json.loads(c["data"])
+                    if d.get("done") or d.get("archived") or not d.get("due"):
+                        continue
+                    if d["due"] == today:
+                        n_today += 1
+                    elif d["due"] < today:
+                        n_late += 1
+            p["lastDigest"] = today
+            p["lastDigestAt"] = now_ms
+            save_prefs(self.s, uid, p)
+            if n_today or n_late:
+                parts = []
+                if n_today:
+                    parts.append("%d %s para hoy" % (n_today, "tarea" if n_today == 1 else "tareas"))
+                if n_late:
+                    parts.append("%d %s" % (n_late, "vencida" if n_late == 1 else "vencidas"))
+                out.append((uid, {"title": "Tu día en Tackboard", "body": "Tienes " + " y ".join(parts) + ".",
+                                  "tag": "digest", "url": "/#/hoy"}))
+        return out
+
+    def deliver(self, uid, payload):
+        vapid = self.app.vapid()
+        with self.s.lock:
+            subs = self.subs(uid)
+        res = send_to_subs(self.s, vapid, subs, payload, self.app.push_subject(),
+                           opener=getattr(self.app, "push_opener", None))
+        return sum(1 for _, st in res if 200 <= st < 300)
+
+    def run_forever(self, interval=30):
+        while True:
+            try:
+                self.tick()
+            except Exception as e:  # pragma: no cover
+                print("Avisos: error %s" % type(e).__name__, file=sys.stderr, flush=True)
+            time.sleep(interval)
+
+
+def now_ms_():
+    return now_ms()
 
 
 # ----------------------------------------------------------------------------------------------------
@@ -654,7 +1174,7 @@ class PushApi:
     def push_key(self, u):
         return {"publicKey": self.vapid().public}
 
-    def push_subscribe(self, u, body):
+    def push_subscribe(self, u, body, tok_hash=None):
         self.vapid()
         endpoint, p256dh, auth = valid_subscription(body)
         with self.s.lock:
@@ -664,35 +1184,56 @@ class PushApi:
             if n >= MAX_SUBS_PER_USER:  # se olvida el dispositivo más antiguo
                 self.s.x("DELETE FROM push_subs WHERE id=(SELECT id FROM push_subs WHERE user_id=? ORDER BY created_at, id LIMIT 1)",
                          (u["id"],))
-            self.s.x("INSERT INTO push_subs(user_id,endpoint,p256dh,auth,created_at) VALUES(?,?,?,?,?)",
-                     (u["id"], endpoint, p256dh, auth, now()))
+            # La suscripción queda ligada a esta sesión: al cerrarla, el dispositivo deja de recibir avisos.
+            self.s.x("INSERT INTO push_subs(user_id,endpoint,p256dh,auth,created_at,token_hash) VALUES(?,?,?,?,?,?)",
+                     (u["id"], endpoint, p256dh, auth, now(), tok_hash))
         return {"ok": True}
 
     def push_unsubscribe(self, u, body):
         endpoint = body.get("endpoint")
-        with self.s.lock:
-            if isinstance(endpoint, str):
-                self.s.x("DELETE FROM push_subs WHERE user_id=? AND endpoint=?", (u["id"], endpoint))
+        if isinstance(endpoint, str) and len(endpoint) <= 1024:
+            try:
+                parsed = urlparse(endpoint)
+                canon = norm_endpoint(parsed) if parsed.scheme == "https" and parsed.hostname else endpoint
+            except ValueError:
+                canon = endpoint
+            with self.s.lock:
+                self.s.x("DELETE FROM push_subs WHERE user_id=? AND endpoint IN (?,?)", (u["id"], endpoint, canon))
         return {"ok": True}
+
+    def notify_prefs(self, u):
+        with self.s.lock:
+            p = load_prefs(self.s, u["id"])
+        p.pop("lastDigest", None)
+        p.pop("lastDigestAt", None)
+        return {"prefs": p, "available": PUSH_AVAILABLE}
+
+    def set_notify_prefs(self, u, body):
+        with self.s.lock:
+            cur = load_prefs(self.s, u["id"])
+            new = clean_prefs(body, cur)
+            new["lastDigest"] = cur.get("lastDigest", "")
+            new["lastDigestAt"] = cur.get("lastDigestAt", 0)
+            # Si se activa el resumen después de su hora, el primero llega mañana; si es antes, hoy mismo.
+            if new["digest"].get("on") and not cur["digest"].get("on"):
+                local = datetime.fromtimestamp(now(), get_tz(new["tz"]))
+                if local.hour * 60 + local.minute >= _hm(new["digest"].get("time", "08:00")):
+                    new["lastDigest"] = local.date().isoformat()
+            save_prefs(self.s, u["id"], new)
+        new.pop("lastDigest", None)
+        new.pop("lastDigestAt", None)
+        return {"prefs": new, "available": PUSH_AVAILABLE}
 
     def push_test(self, u):
         vapid = self.vapid()
         if not PUSH_TEST.hit(u["id"]):
             raise ApiError(429, "rate")
         with self.s.lock:
-            subs = [dict(r) for r in self.s.q("SELECT * FROM push_subs WHERE user_id=?", (u["id"],))]
-        results = []
-        for sub in subs:
-            status = send_push(vapid, sub, {"title": "Tackboard", "body": "Aviso de prueba: las notificaciones funcionan.",
-                                            "tag": "tackboard-test", "url": "/#/ajustes"},
-                               self.push_subject(), ttl=600, urgency="high", opener=getattr(self, "push_opener", None))
-            results.append({"service": urlparse(sub["endpoint"]).hostname, "status": status})
-            with self.s.lock:
-                if status in (404, 410):
-                    self.s.x("DELETE FROM push_subs WHERE id=?", (sub["id"],))
-                elif 200 <= status < 300:
-                    self.s.x("UPDATE push_subs SET last_ok=? WHERE id=?", (now(), sub["id"]))
-        return {"sent": len(subs), "results": results}
+            subs = active_subs(self.s, u["id"])
+        res = send_to_subs(self.s, vapid, subs, {"title": "Tackboard", "body": "Aviso de prueba: las notificaciones funcionan.",
+                                                 "tag": "tackboard-test", "url": "/#/ajustes"},
+                           self.push_subject(), opener=getattr(self, "push_opener", None), ttl=600)
+        return {"sent": len(subs), "results": [{"service": urlparse(sb["endpoint"]).hostname, "status": st} for sb, st in res]}
 
 
 class App(PushApi):
@@ -865,6 +1406,7 @@ class App(PushApi):
         with self.s.lock:
             self.s.x("UPDATE users SET pw_hash=?, recovery_hash=? WHERE id=?", (pw_hash, sha(norm_code(new_code)), u["id"]))
             self.s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
+            self.s.x("DELETE FROM push_subs WHERE user_id=?", (u["id"],))
             tok = self.issue_token(u["id"])
         return {"token": tok, "user": user_json(u), "recoveryCode": new_code}
 
@@ -899,6 +1441,9 @@ class App(PushApi):
             self.s.x("UPDATE users SET pw_hash=? WHERE id=?", (h, u["id"]))
             self.s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
             tok = self.issue_token(u["id"])
+            # Este dispositivo conserva sus avisos (pasan a la sesión nueva); los de las demás sesiones se borran.
+            self.s.x("UPDATE push_subs SET token_hash=? WHERE user_id=? AND token_hash=?", (sha(tok), u["id"], tok_hash))
+            self.s.x("DELETE FROM push_subs WHERE user_id=? AND (token_hash IS NULL OR token_hash<>?)", (u["id"], sha(tok)))
         return {"token": tok}
 
     def new_recovery(self, u, body):
@@ -951,6 +1496,7 @@ class App(PushApi):
             invitations = self.invitations(u["id"])
             push = [{"service": urlparse(r["endpoint"]).hostname, "createdAt": r["created_at"], "lastOk": r["last_ok"]}
                     for r in self.s.q("SELECT endpoint, created_at, last_ok FROM push_subs WHERE user_id=?", (u["id"],))]
+            notify_prefs = load_prefs(self.s, u["id"])
         return {
             "app": "Tackboard",
             "exportedAt": now(),
@@ -961,6 +1507,7 @@ class App(PushApi):
             "invitationsReceived": invitations,
             "sessions": sessions,
             "pushDevices": push,
+            "notificationPrefs": notify_prefs,
         }
 
     # ---- sincronización ---------------------------------------------------------------------------
@@ -1263,6 +1810,8 @@ def delete_user(store, uid):
     store.x("UPDATE members SET invited_by=NULL WHERE invited_by=?", (uid,))
     store.x("DELETE FROM tokens WHERE user_id=?", (uid,))
     store.x("DELETE FROM push_subs WHERE user_id=?", (uid,))
+    store.x("DELETE FROM notify_prefs WHERE user_id=?", (uid,))
+    store.x("DELETE FROM notify_log WHERE user_id=?", (uid,))
     store.x("DELETE FROM users WHERE id=?", (uid,))
 
 
@@ -1354,10 +1903,12 @@ class Handler(BaseHTTPRequestHandler):
 
         if method == "POST" and path == "/api/auth/logout":
             with app.s.lock:
+                app.s.x("DELETE FROM push_subs WHERE token_hash=?", (tok_hash,))
                 app.s.x("DELETE FROM tokens WHERE hash=?", (tok_hash,))
             return self.send_json(200, {"ok": True})
         if method == "POST" and path == "/api/auth/logout-others":
             with app.s.lock:
+                app.s.x("DELETE FROM push_subs WHERE user_id=? AND (token_hash IS NULL OR token_hash<>?)", (u["id"], tok_hash))
                 app.s.x("DELETE FROM tokens WHERE user_id=? AND hash<>?", (u["id"], tok_hash))
             return self.send_json(200, {"ok": True})
         if method == "GET" and path == "/api/me":
@@ -1382,11 +1933,15 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/push/key":
                 return self.send_json(200, app.push_key(u))
             if method == "POST" and path == "/api/push/subscribe":
-                return self.send_json(200, app.push_subscribe(u, body))
+                return self.send_json(200, app.push_subscribe(u, body, tok_hash))
             if method == "POST" and path == "/api/push/unsubscribe":
                 return self.send_json(200, app.push_unsubscribe(u, body))
             if method == "POST" and path == "/api/push/test":
                 return self.send_json(200, app.push_test(u))
+            if method == "GET" and path == "/api/push/prefs":
+                return self.send_json(200, app.notify_prefs(u))
+            if method == "POST" and path == "/api/push/prefs":
+                return self.send_json(200, app.set_notify_prefs(u, body))
         m = ROUTE_INVITE.match(path)
         if m and method == "POST":
             return self.send_json(200, app.answer_invitation(u, m.group(1), body))
@@ -1534,6 +2089,7 @@ def admin(argv):
         pw = secrets.token_urlsafe(12)
         s.x("UPDATE users SET pw_hash=? WHERE id=?", (hash_password(pw), u["id"]))
         s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
+        s.x("DELETE FROM push_subs WHERE user_id=?", (u["id"],))
         print("Nueva contraseña de %s: %s" % (arg, pw))
         return
     if cmd in ("disable", "enable") and arg:
@@ -1541,6 +2097,7 @@ def admin(argv):
         s.x("UPDATE users SET disabled=? WHERE id=?", (1 if cmd == "disable" else 0, u["id"]))
         if cmd == "disable":
             s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
+            s.x("DELETE FROM push_subs WHERE user_id=?", (u["id"],))
         print("Hecho.")
         return
     if cmd == "deluser" and arg:
@@ -1557,6 +2114,10 @@ def main():
         return admin(sys.argv[2:])
     store = Store(DB_PATH)
     srv = make_server(store)
+    if PUSH_AVAILABLE and env_flag("TB_NOTIFY"):
+        threading.Thread(target=Notifier(Handler.app).run_forever, name="avisos", daemon=True).start()
+    elif not PUSH_AVAILABLE:
+        print("Avisos desactivados: falta python3-cryptography.", flush=True)
     print("Tackboard %s escuchando en %s:%d" % (VERSION, HOST, PORT), flush=True)
     try:
         srv.serve_forever()

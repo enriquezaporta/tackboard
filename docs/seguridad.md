@@ -72,7 +72,21 @@ proxy de confianza (`tackboard-admin proxy`).
   que se genera la primera vez y se guarda en la base de datos.
 - Solo se aceptan suscripciones de los servicios de notificaciones conocidos (Apple, Google, Mozilla, Microsoft):
   el servidor no puede usarse para hacer peticiones a otras direcciones.
-- Las suscripciones caducadas (respuesta 404/410 del servicio) se borran solas. Máximo 10 dispositivos por cuenta.
+- Solo `https` al puerto 443, sin usuario ni contraseña en la dirección; el servidor no sigue redirecciones del servicio
+  de avisos y espera como mucho 5 s por respuesta (los envíos a varios dispositivos van en paralelo).
+- Cada suscripción va ligada a la sesión del dispositivo: cerrar sesión (también «cerrar las demás»), cambiar la
+  contraseña en otro dispositivo, recuperar la cuenta o desactivarla deja de enviar avisos a ese dispositivo.
+- Las suscripciones caducadas (respuesta 404/410) se borran, y también las que llevan 3 días fallando: un corte de red
+  corto no las borra. Máximo 10 dispositivos por cuenta.
+- **Contra el abuso**: `alertBase` tiene que corresponder a la fecha de la tarjeta (±14 h por las zonas horarias); el
+  mismo recordatorio de la misma tarjeta no se repite en 30 minutos aunque se cambie la hora una y otra vez; como mucho
+  20 avisos sueltos por persona, tablero y hora (40 en total). Lo que pase de ahí no se pierde: llega agrupado en un
+  aviso-resumen, como mucho uno cada 10 minutos. El envío se reparte por turnos entre personas y, dentro de cada persona,
+  entre tableros, para que un tablero compartido lleno de tarjetas no tape los avisos de los demás.
+- Por defecto el aviso no incluye el título de la tarea: el contenido va cifrado, pero así ni siquiera el dispositivo
+  bloqueado lo muestra. Cada persona puede activarlo.
+- Antes de entregar un aviso se vuelve a comprobar que la persona sigue siendo miembro del tablero.
+- El registro de avisos (qué tarjeta y cuándo) se borra a los 3 días.
 
 ## Servidor
 
@@ -104,6 +118,11 @@ Antes de publicar la versión 1.0 un agente independiente revisó el código y e
 
 Todos están corregidos y tienen prueba automática en `tests/test_backend.py`. Una segunda revisión de las
 correcciones encontró tres problemas nuevos, también corregidos.
+
+En la versión 1.1 una tercera revisión, centrada en los avisos, no encontró forma de que un aviso llegue a quien no es
+miembro del tablero, pero sí abusos posibles: saturar el planificador con miles de tarjetas, repetir avisos cambiando la
+hora, direcciones de suscripción con puertos raros y avisos que seguían llegando tras cerrar sesión. Están corregidos
+con sus pruebas.
 
 ## Pendiente de ti si la publicas
 

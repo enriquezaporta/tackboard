@@ -566,7 +566,7 @@ class BackendTest(unittest.TestCase):
             self.srv.RequestHandlerClass.app.push_opener = gone
             a.post("/api/push/test")
             with self.store.lock:
-                self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs")[0], 0)
+                self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs WHERE endpoint=?", (sub["endpoint"],))[0], 0)
         finally:
             self.srv.RequestHandlerClass.app.push_opener = None
         # Darse de baja y borrar la cuenta limpian las suscripciones.
@@ -575,7 +575,382 @@ class BackendTest(unittest.TestCase):
         a.post("/api/push/subscribe", sub)
         a.post("/api/me/delete", {"password": "secreto123"})
         with self.store.lock:
-            self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs")[0], 0)
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs WHERE endpoint=?", (sub["endpoint"],))[0], 0)
+
+    # ---------------------------------------------------------------- recordatorios
+
+    def notify_setup(self, tz="Europe/Madrid"):
+        """Usuario con un dispositivo suscrito, un tablero y un opener falso que recoge los envíos."""
+        a = self.user()
+        key, sub = self.make_device()
+        self.assertEqual(a.post("/api/push/subscribe", sub)[0], 200)
+        self.assertEqual(a.post("/api/push/prefs", {"tz": tz})[0], 200)
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        sent = []
+        app = self.srv.RequestHandlerClass.app
+
+        class Res:
+            status = 201
+            def __enter__(self): return self
+            def __exit__(self, *e): return False
+
+        def opener(req, timeout=10):
+            sent.append(self.decrypt(key, sub, req.data))
+            return Res()
+        app.push_opener = opener
+        self.addCleanup(lambda: setattr(app, "push_opener", None))
+        with self.store.lock:
+            self.store.x("DELETE FROM settings WHERE key='notify_scan'")
+            self.store.x("DELETE FROM notify_log")
+        return a, bid, col, sent, server.Notifier(app)
+
+    @staticmethod
+    def madrid_ms(y, mo, d, h, mi):
+        from zoneinfo import ZoneInfo
+        from datetime import datetime
+        return int(datetime(y, mo, d, h, mi, tzinfo=ZoneInfo("Europe/Madrid")).timestamp() * 1000)
+
+    def timed_card(self, a, bid, col, title, due_ms, due, due_time, reminders, **kw):
+        c = card(server.b64u(os.urandom(16)), bid, col, title, due=due, dueTime=due_time, dueAt=due_ms,
+                 alertBase=due_ms, reminders=reminders, **kw)
+        r = self.sync(a, [c])
+        self.assertEqual(r["rejected"], [])
+        return c
+
+    def test_reminder_sent_once_at_the_right_time(self):
+        a, bid, col, sent, n = self.notify_setup()
+        due = self.madrid_ms(2030, 3, 5, 10, 0)
+        self.timed_card(a, bid, col, "Copia de seguridad", due, "2030-03-05", "10:00", ["1h", "due"])
+        n.tick(due - 2 * 3600_000)                     # 08:00: nada
+        self.assertEqual(sent, [])
+        n.tick(due - 3600_000 + 20_000)                # 09:00:20 → "1 h antes"
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["body"], "Tienes una tarea que vence en 60 min")
+        self.assertTrue(sent[0]["url"].startswith("/#/tarjeta/"))
+        n.tick(due - 3600_000 + 50_000)                # sin repetir
+        self.assertEqual(len(sent), 1)
+        n.tick(due + 10_000)                           # 10:00:10 → "al vencer"
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(sent[1]["body"], "Tienes una tarea que ha vencido")
+
+    def test_reminder_with_titles_and_shared_board(self):
+        a, bid, col, sent, n = self.notify_setup()
+        b, c_ = self.user(), self.user()
+        self.share(a, b, bid, "read")
+        key_b, sub_b = self.make_device()
+        b.post("/api/push/subscribe", sub_b)
+        key_c, sub_c = self.make_device()
+        c_.post("/api/push/subscribe", sub_c)        # c no es miembro
+        a.post("/api/push/prefs", {"showTitles": True})
+        due = self.madrid_ms(2030, 3, 6, 18, 0)
+        self.timed_card(a, bid, col, "Material del campeonato", due, "2030-03-06", "18:00", ["15m"])
+        n.tick(due - 20 * 60000)
+        n.tick(due - 15 * 60000 + 1000)
+        bodies = [s["body"] for s in sent]
+        # La recibe a (con título) y b (sin título, su preferencia por defecto); c no.
+        self.assertEqual(len(sent), 1 + 0, "el opener solo descifra con la clave de a")
+        self.assertIn("«Material del campeonato» vence en 15 min", bodies)
+        with self.store.lock:
+            users = {r["user_id"] for r in self.store.q("SELECT user_id FROM notify_log")}
+        uid = lambda cl: self.store.one("SELECT id FROM users WHERE username=?", (cl.username,))["id"]
+        self.assertEqual(users, {uid(a), uid(b)})
+
+    def test_quiet_hours_defer(self):
+        a, bid, col, sent, n = self.notify_setup()
+        a.post("/api/push/prefs", {"quiet": {"on": True, "start": "23:00", "end": "08:00"}})
+        due = self.madrid_ms(2030, 3, 7, 3, 0)          # vence a las 03:00
+        self.timed_card(a, bid, col, "Algo de madrugada", due, "2030-03-07", "03:00", ["1h"])
+        n.tick(due - 3600_000 - 10_000)
+        n.tick(due - 3600_000 + 10_000)                # 02:00: en silencio
+        self.assertEqual(sent, [])
+        n.tick(self.madrid_ms(2030, 3, 7, 7, 59))
+        self.assertEqual(sent, [])
+        n.tick(self.madrid_ms(2030, 3, 7, 8, 0) + 5000)  # al acabar el silencio
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["body"], "Tienes una tarea que venció a las 03:00")
+
+    def test_done_or_moved_card_cancels(self):
+        a, bid, col, sent, n = self.notify_setup()
+        a.post("/api/push/prefs", {"quiet": {"on": True, "start": "00:00", "end": "09:00"}})
+        due = self.madrid_ms(2030, 3, 8, 8, 0)
+        c = self.timed_card(a, bid, col, "Se completa", due, "2030-03-08", "08:00", ["1h"])
+        c2 = self.timed_card(a, bid, col, "Se mueve", due, "2030-03-08", "08:00", ["1h"])
+        n.tick(due - 3600_000 - 10_000)
+        n.tick(due - 3600_000 + 10_000)                # programados para las 09:00
+        done = dict(c, updatedAt=now_ms() + 10); done["data"] = dict(c["data"], done=True)
+        later = due + 86400_000
+        moved = dict(c2, updatedAt=now_ms() + 10)
+        moved["data"] = dict(c2["data"], due="2030-03-09", dueAt=later, alertBase=later)
+        self.sync(a, [done, moved])
+        n.tick(self.madrid_ms(2030, 3, 8, 9, 0) + 5000)
+        self.assertEqual(sent, [])
+
+    def test_muted_board_and_disabled(self):
+        a, bid, col, sent, n = self.notify_setup()
+        a.post("/api/push/prefs", {"mutedBoards": [bid]})
+        due = self.madrid_ms(2030, 3, 9, 12, 0)
+        self.timed_card(a, bid, col, "Silenciada", due, "2030-03-09", "12:00", ["due"])
+        n.tick(due - 10_000)
+        n.tick(due + 10_000)
+        self.assertEqual(sent, [])
+        a.post("/api/push/prefs", {"mutedBoards": [], "enabled": False})
+        due2 = due + 3600_000
+        self.timed_card(a, bid, col, "Desactivado", due2, "2030-03-09", "13:00", ["due"])
+        n.tick(due2 + 10_000)
+        self.assertEqual(sent, [])
+
+    def test_all_day_and_digest(self):
+        a, bid, col, sent, n = self.notify_setup()
+        a.post("/api/push/prefs", {"digest": {"on": True, "time": "07:30"}})
+        base = self.madrid_ms(2030, 3, 10, 9, 0)        # todo el día: referencia a las 9:00
+        c = card(server.b64u(os.urandom(16)), bid, col, "Pagar el seguro", due="2030-03-10", dueTime="",
+                 dueAt=self.madrid_ms(2030, 3, 10, 23, 59), alertBase=base, reminders=["1d"])
+        self.sync(a, [c])
+        n.tick(base - 86400_000 - 10_000)
+        n.tick(base - 86400_000 + 10_000)              # día anterior a las 9:00
+        self.assertEqual([s["body"] for s in sent], ["Tienes una tarea que vence mañana"])
+        sent.clear()
+        n.tick(self.madrid_ms(2030, 3, 10, 7, 29))
+        self.assertEqual(sent, [])
+        n.tick(self.madrid_ms(2030, 3, 10, 7, 31))
+        self.assertEqual([s["body"] for s in sent], ["Tienes 1 tarea para hoy."])
+        n.tick(self.madrid_ms(2030, 3, 10, 12, 0))     # una vez al día
+        self.assertEqual(len(sent), 1)
+
+    def test_notify_prefs_validation(self):
+        a = self.user()
+        st, r = a.get("/api/push/prefs")
+        self.assertEqual(r["prefs"]["defaultReminders"], ["1h"])
+        for bad in ({"defaultReminders": ["5m"]}, {"quiet": {"start": "25:00"}}, {"tz": "../etc/passwd"},
+                    {"tz": "Marte/Olimpo"}, {"mutedBoards": ["x"]}, {"digest": "sí"}):
+            self.assertEqual(a.post("/api/push/prefs", bad)[0], 400, bad)
+        st, r = a.post("/api/push/prefs", {"defaultReminders": ["due", "1d", "1d"], "tz": "America/Mexico_City",
+                                           "quiet": {"on": True}})
+        self.assertEqual(r["prefs"]["defaultReminders"], ["1d", "due"])
+        self.assertEqual(r["prefs"]["quiet"], {"on": True, "start": "23:00", "end": "08:00"})
+        # Recordatorios de tarjeta: solo valores conocidos.
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        r = self.sync(a, [card(server.b64u(os.urandom(16)), bid, col, reminders=["ya"])])
+        self.assertEqual(r["rejected"][0]["reason"], "invalid:reminders")
+
+    def test_due_text(self):
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("Europe/Madrid")
+        now = self.madrid_ms(2030, 3, 5, 9, 0)
+        f = lambda due, t, at: server.due_text({"due": due, "dueTime": t, "dueAt": at}, now, tz)
+        self.assertEqual(f("2030-03-05", "09:30", self.madrid_ms(2030, 3, 5, 9, 30)), "vence en 30 min")
+        self.assertEqual(f("2030-03-05", "18:00", self.madrid_ms(2030, 3, 5, 18, 0)), "vence hoy a las 18:00")
+        self.assertEqual(f("2030-03-06", "10:00", self.madrid_ms(2030, 3, 6, 10, 0)), "vence mañana a las 10:00")
+        self.assertEqual(f("2030-03-12", "10:00", self.madrid_ms(2030, 3, 12, 10, 0)), "vence el 12 de marzo a las 10:00")
+        self.assertEqual(f("2030-03-05", "", None), "vence hoy")
+        self.assertEqual(f("2030-03-08", "", None), "vence el viernes 8")
+
+    def test_push_endpoint_strict(self):
+        a = self.user()
+        _, sub = self.make_device()
+        for ep in ("https://a@fcm.googleapis.com/x", "https://fcm.googleapis.com:81/x", "https://fcm.googleapis.com:0/x",
+                   "https://[::1]@fcm.googleapis.com/x", "http://fcm.googleapis.com/x", "https://fcm.googleapis.com.evil.io/x",
+                   "https://fcm.googleapis.com\\@evil.io/x", "https://fcm.googleapis.com/x#frag"):
+            self.assertEqual(a.post("/api/push/subscribe", dict(sub, endpoint=ep))[0], 400, ep)
+        self.assertEqual(a.post("/api/push/subscribe", dict(sub, endpoint="https://FCM.googleapis.com:443/fcm/send/abc"))[0], 200)
+        with self.store.lock:
+            self.assertIsNotNone(self.store.one("SELECT 1 FROM push_subs WHERE endpoint='https://fcm.googleapis.com/fcm/send/abc'"))
+
+    def test_push_redirect_not_followed(self):
+        import http.server
+        hits = []
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                hits.append(self.path)
+                self.send_response(302); self.send_header("Location", "/interno"); self.send_header("Content-Length", "0"); self.end_headers()
+            do_GET = do_POST
+            def log_message(self, *a): pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            key, sub = self.make_device()
+            sb = {"endpoint": "http://127.0.0.1:%d/push" % srv.server_address[1], "p256dh": sub["keys"]["p256dh"], "auth": sub["keys"]["auth"]}
+            st = server.send_push(server.Vapid(self.store), sb, {"t": 1}, "mailto:x@example.com")
+            self.assertEqual(st, 302)
+            self.assertEqual(hits, ["/push"], "no sigue la redirección")
+        finally:
+            srv.shutdown()
+
+    def test_push_tied_to_session(self):
+        a, bid, col, sent, n = self.notify_setup()
+        with self.store.lock:
+            uid = self.store.one("SELECT id FROM users WHERE username=?", (a.username,))["id"]
+            count = lambda: self.store.one("SELECT COUNT(*) FROM push_subs WHERE user_id=?", (uid,))[0]
+            self.assertEqual(count(), 1)
+        # Otra sesión del mismo usuario cierra las demás: este dispositivo deja de recibir avisos.
+        other = Client(self.base, Client(self.base).post("/api/auth/login", {"username": a.username, "password": "secreto123"})[1]["token"])
+        other.post("/api/auth/logout-others")
+        with self.store.lock:
+            self.assertEqual(count(), 0)
+        # Al cerrar sesión, también.
+        _, sub2 = self.make_device()
+        other.post("/api/push/subscribe", sub2)
+        other.post("/api/auth/logout")
+        with self.store.lock:
+            self.assertEqual(count(), 0)
+
+    def test_alert_base_must_match_due(self):
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        due = self.madrid_ms(2030, 4, 1, 10, 0)
+        ok_card = card(server.b64u(os.urandom(16)), bid, col, due="2030-04-01", dueTime="10:00", dueAt=due, alertBase=due, reminders=["due"])
+        self.assertEqual(self.sync(a, [ok_card])["rejected"], [])
+        for bad in (dict(dueAt=due, alertBase=due + 60000), dict(dueAt=due + 2 * 86400_000, alertBase=due + 2 * 86400_000)):
+            c = card(server.b64u(os.urandom(16)), bid, col, due="2030-04-01", dueTime="10:00", reminders=["due"], **bad)
+            self.assertEqual(len(self.sync(a, [c])["rejected"]), 1, bad)
+
+    def test_reminder_spam_limited(self):
+        a, bid, col, sent, n = self.notify_setup()
+        due = self.madrid_ms(2030, 4, 2, 12, 0)
+        c = self.timed_card(a, bid, col, "Spam", due, "2030-04-02", "12:00", ["due"])
+        n.tick(due - 10_000)
+        n.tick(due + 1000)
+        self.assertEqual(len(sent), 1)
+        # Mover la hora un minuto cada vez no genera un aviso nuevo cada vez.
+        for i in range(1, 4):
+            t2 = due + i * 60000
+            hhmm = "12:%02d" % i
+            moved = dict(c, updatedAt=now_ms() + i * 10)
+            moved["data"] = dict(c["data"], dueTime=hhmm, dueAt=t2, alertBase=t2)
+            self.sync(a, [moved])
+            n.tick(t2 + 1000)
+        self.assertEqual(len(sent), 1)
+        # Muchas tarjetas a la vez: sueltos hasta el tope y el resto en un resumen. Ninguno se pierde.
+        due2 = self.madrid_ms(2030, 4, 2, 15, 0)
+        many = server.BOARD_HOURLY_CAP + 15
+        self.sync(a, [card(server.b64u(os.urandom(16)), bid, col, "T%d" % i, due="2030-04-02", dueTime="15:00",
+                           dueAt=due2, alertBase=due2, reminders=["due"]) for i in range(many)])
+        n.tick(due2 - 10_000)
+        n.tick(due2 + 1000)
+        n.tick(due2 + 31_000)
+        n.tick(due2 + 61_000)
+        singles = [m for m in sent[1:] if m["tag"].startswith("card-")]
+        summaries = [m for m in sent[1:] if m["tag"] == "tackboard-summary"]
+        self.assertEqual(len(singles), server.BOARD_HOURLY_CAP)
+        self.assertEqual(len(summaries), 1)
+        self.assertIn("%d tareas más" % (many - server.BOARD_HOURLY_CAP), summaries[0]["body"])
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM notify_log WHERE state=0")[0], 0)
+
+    def test_burst_of_all_day_cards_not_lost(self):
+        """150 tareas de todo el día (todas a las 9:00): todas se programan y llegan sueltas o en resumen."""
+        a, bid, col, sent, n = self.notify_setup()
+        base = self.madrid_ms(2030, 5, 6, 9, 0)
+        old = server.SCHEDULE_TICK_CAP
+        server.SCHEDULE_TICK_CAP = 40  # obliga a repartir la programación en varias revisiones
+        self.addCleanup(setattr, server, "SCHEDULE_TICK_CAP", old)
+        cards = [card(server.b64u(os.urandom(16)), bid, col, "D%d" % i, due="2030-05-06", alertBase=base,
+                      reminders=["due"]) for i in range(150)]
+        self.assertEqual(self.sync(a, cards)["rejected"], [])
+        n.tick(base - 10_000)
+        for i in range(6):                                   # revisiones cada 30 s
+            n.tick(base + 1000 + i * 30_000)
+        for i in range(1, 4):                                # y más tarde, por si quedó algo en cola
+            n.tick(base + 1000 + i * server.SUMMARY_GAP_MS)
+        with self.store.lock:
+            states = dict(self.store.q("SELECT state, COUNT(*) FROM notify_log GROUP BY state"))
+        self.assertEqual(states.get(1, 0) + states.get(5, 0), 150, states)
+        self.assertNotIn(0, states)
+        self.assertTrue(any(m["tag"] == "tackboard-summary" for m in sent))
+
+    def test_shared_board_flood_does_not_hide_own_reminders(self):
+        """Un miembro que llena un tablero compartido no tapa los avisos de los tableros propios."""
+        a, bid, col, sent, n = self.notify_setup()
+        b = self.user()
+        bid_b, col_b = self.new_board(b, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        self.share(b, a, bid_b, "read")
+        due = self.madrid_ms(2030, 5, 7, 12, 0)
+        flood = [card(server.b64u(os.urandom(16)), bid_b, col_b, "F%d" % i, due="2030-05-07", dueTime="12:00",
+                      dueAt=due, alertBase=due, reminders=["due"]) for i in range(60)]
+        self.assertEqual(self.sync(b, flood)["rejected"], [])
+        own = self.timed_card(a, bid, col, "Mía", due, "2030-05-07", "12:00", ["due"])
+        n.tick(due - 10_000)
+        n.tick(due + 1000)
+        self.assertIn("card-" + own["id"], [m["tag"] for m in sent])
+
+    def test_repeat_gap_ignores_stale_pending(self):
+        """Un aviso programado y luego cambiado (dentro del silencio) no impide el nuevo."""
+        a, bid, col, sent, n = self.notify_setup()
+        due = self.madrid_ms(2030, 5, 8, 12, 0)
+        c = self.timed_card(a, bid, col, "Mover", due, "2030-05-08", "12:00", ["due"])
+        a.post("/api/push/prefs", {"quiet": {"on": True, "start": "11:00", "end": "12:10"}})
+        n.tick(due + 1000)                 # programado para las 12:10 (silencio)
+        self.assertEqual(sent, [])
+        a.post("/api/push/prefs", {"quiet": {"on": False, "start": "11:00", "end": "12:10"}})
+        t2 = due + 5 * 60000
+        moved = dict(c, updatedAt=now_ms() + 50)
+        moved["data"] = dict(c["data"], dueTime="12:05", dueAt=t2, alertBase=t2)
+        self.sync(a, [moved])
+        n.tick(t2 + 1000)
+        self.assertEqual(len(sent), 1)
+
+    def test_digest_enabled_before_its_time_comes_today(self):
+        a = self.user()
+        from zoneinfo import ZoneInfo
+        from datetime import datetime, timedelta
+        local = datetime.now(ZoneInfo("Europe/Madrid"))
+        if local.hour >= 23:
+            self.skipTest("demasiado tarde para la prueba")
+        later = (local + timedelta(minutes=30)).strftime("%H:%M")
+        if later < local.strftime("%H:%M"):
+            self.skipTest("cruza la medianoche")
+        a.post("/api/push/prefs", {"tz": "Europe/Madrid", "digest": {"on": True, "time": later}})
+        with self.store.lock:
+            uid = self.store.one("SELECT id FROM users WHERE username=?", (a.username,))["id"]
+            p = server.load_prefs(self.store, uid)
+        self.assertNotEqual(p.get("lastDigest"), local.date().isoformat())
+
+    def test_subscription_survives_short_outage(self):
+        a = self.user()
+        _, sub = self.make_device()
+        a.post("/api/push/subscribe", sub)
+        app = self.srv.RequestHandlerClass.app
+        with self.store.lock:
+            uid = self.store.one("SELECT id FROM users WHERE username=?", (a.username,))["id"]
+
+        class Res:
+            status = 503
+            def __enter__(self): return self
+            def __exit__(self, *e): return False
+        for _ in range(8):
+            with self.store.lock:
+                subs = server.active_subs(self.store, uid)
+            server.send_to_subs(self.store, app.vapid(), subs, {"title": "x", "body": "y"}, "mailto:a@b.es",
+                                opener=lambda req, timeout=10: Res())
+        with self.store.lock:
+            self.assertEqual(len(server.active_subs(self.store, uid)), 1)
+            # Si lleva días fallando, sí se borra.
+            self.store.x("UPDATE push_subs SET fail_since=? WHERE user_id=?", (server.now() - server.SUB_FAIL_WINDOW - 10, uid))
+            subs = server.active_subs(self.store, uid)
+        server.send_to_subs(self.store, app.vapid(), subs, {"title": "x", "body": "y"}, "mailto:a@b.es",
+                            opener=lambda req, timeout=10: Res())
+        with self.store.lock:
+            self.assertEqual(len(server.active_subs(self.store, uid)), 0)
+
+    def test_unsubscribe_uses_same_normalization(self):
+        a = self.user()
+        _, sub = self.make_device()
+        sub["endpoint"] = sub["endpoint"].replace("https://web.push.apple.com/", "https://WEB.push.apple.com:443/") + ";x=1"
+        self.assertEqual(a.post("/api/push/subscribe", sub)[0], 200)
+        a.post("/api/push/unsubscribe", {"endpoint": sub["endpoint"]})
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM push_subs WHERE endpoint LIKE '%;x=1'")[0], 0)
+
+    def test_disabled_user_gets_nothing(self):
+        a, bid, col, sent, n = self.notify_setup()
+        due = self.madrid_ms(2030, 4, 3, 12, 0)
+        self.timed_card(a, bid, col, "X", due, "2030-04-03", "12:00", ["due"])
+        n.tick(due - 10_000)
+        with self.store.lock:
+            self.store.x("UPDATE users SET disabled=1 WHERE username=?", (a.username,))
+        n.tick(due + 1000)
+        self.assertEqual(sent, [])
 
     def test_unread_body_closes_connection(self):
         """Un cuerpo no leído no debe interpretarse como la siguiente petición (respuestas cruzadas)."""

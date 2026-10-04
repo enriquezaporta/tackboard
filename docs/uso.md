@@ -68,6 +68,32 @@ Reúne las tarjetas de todos tus tableros:
 Puedes cambiar el permiso o quitar a alguien en cualquier momento. Quien no es anfitrión puede **salir del
 tablero** desde el menú del tablero. Si no quieres que nadie te invite, desactívalo en *Ajustes*.
 
+## Avisos
+
+Tackboard puede avisarte antes de que venza una tarea, también en el iPhone (iOS 16.4 o posterior).
+
+1. **Activa los avisos en cada dispositivo**: *Ajustes → Avisos → Activar en este dispositivo* y acepta el permiso.
+   En iPhone y iPad tiene que ser con la app instalada en la pantalla de inicio y abierta desde su icono.
+2. **Elige cuándo avisar en cada tarjeta**: en la tarjeta, fila *Avisos*: 2 días, 1 día, 3 h, 1 h o 15 min antes, o al
+   vencer. Puedes marcar varios. Las tareas sin hora usan como referencia las 9:00 de ese día.
+3. Al dar fecha a una tarjeta se le pone el **recordatorio por defecto** (1 h antes). Lo cambias en *Ajustes*.
+
+En *Ajustes → Avisos* también puedes:
+
+- desactivarlos del todo, o solo para algunos tableros (por ejemplo, uno compartido que no te interesa);
+- poner un **horario de silencio**: lo que toque dentro te llega al terminar;
+- recibir un **resumen diario** a la hora que quieras;
+- mostrar el **título de la tarea** en el aviso. Por defecto no aparece, por privacidad: el aviso pasa por el servicio
+  de notificaciones de Apple o Google.
+
+Tocar un aviso abre la tarjeta. Si completas una tarea, la archivas o le cambias la fecha, sus avisos se recalculan solos.
+En los tableros compartidos, los recordatorios de una tarjeta avisan a todos los miembros que no hayan silenciado el tablero.
+
+El icono de la campana en una tarjeta indica que tiene aviso.
+
+Si muchas tareas vencen a la vez (por ejemplo, decenas de tareas sin hora el mismo día), llegan unos cuantos avisos
+sueltos y el resto agrupado en uno: «Tienes N tareas más que vencen pronto». Tocarlo abre *Hoy*.
+
 ## Sin conexión
 
 Todo lo que haces se guarda primero en el dispositivo y se envía al servidor en cuanto hay conexión. El punto de

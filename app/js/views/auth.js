@@ -68,6 +68,7 @@ export function renderAuth(main) {
       mode = 'login';
       location.hash = '#/';
       S.sync();
+      S.loadNotifyPrefs();
     } catch (ex) {
       err.textContent = errorText(ex);
     } finally { btn.disabled = false; }

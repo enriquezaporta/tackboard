@@ -114,7 +114,11 @@ tackboard-admin proxy <IP-del-proxy>
 ```
 
 Si usas una CA propia (`tls internal`), instala su certificado raíz en cada dispositivo. En iPhone, además, hay que
-activarlo en *Ajustes → General → Información → Ajustes de confianza de certificados*.
+activarlo en *Ajustes → General → Información → Ajustes de confianza de certificados*. Los avisos push funcionan
+igual con una CA propia (probado en iPhone).
+
+Para los **avisos**, el servidor necesita salir a internet por el puerto 443 (servicios de notificaciones de Apple,
+Google, Mozilla y Microsoft). No hace falta abrir ningún puerto de entrada.
 
 ### Directamente con Caddy y un dominio público
 

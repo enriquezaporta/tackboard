@@ -506,3 +506,18 @@ body.is-dragging .columns { scroll-snap-type: none; }
 :root[data-theme="dark"] .prio-low { color: var(--muted); background: var(--surface-2); }
 .board-grid { margin-top: 6px; }
 @media (max-width: 699px) { .board-tile.add { min-height: 64px; flex-direction: row; } }
+/* Ajustes de avisos */
+.list-row.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+.time-input { width: auto; min-height: 38px; padding: 6px 10px; font-size: 15px; }
+.small-title { margin-top: 14px; }
+.notify-prefs .chip:disabled, .notify-prefs input:disabled + span { opacity: .5; }
+#push-box { margin-bottom: 12px; }
+/* Ajustes de avisos */
+.list-row.stack { flex-direction: column; align-items: stretch; gap: 10px; }
+.time-input { width: auto; min-height: 38px; padding: 6px 10px; font-size: 15px; }
+.small-title { margin-top: 14px; }
+.notify-prefs .chip:disabled { opacity: .5; }
+.switch input:disabled + span { opacity: .5; }
+#push-box { margin-bottom: 12px; }
+.list-row.times { flex-wrap: wrap; gap: 8px 10px; }
+.list-row.times .time-input { flex: 1 1 110px; }

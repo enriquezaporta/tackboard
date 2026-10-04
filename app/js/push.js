@@ -41,3 +41,11 @@ export async function disablePush() {
 }
 
 export const testPush = () => post('/api/push/test');
+
+/** Vuelve a registrar en el servidor la suscripción que ya tiene el dispositivo (p. ej., tras entrar de nuevo). */
+export async function resubscribe() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || Notification.permission !== 'granted') return;
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (sub) await post('/api/push/subscribe', sub.toJSON());
+}

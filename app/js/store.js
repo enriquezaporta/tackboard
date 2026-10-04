@@ -1,7 +1,7 @@
 // Estado de la app en memoria, guardado local y sincronización con el servidor.
 import * as db from './db.js';
-import { api, post, setToken, ApiError } from './api.js';
-import { uid, dueAt, todayStr } from './util.js';
+import { api, get, post, setToken, ApiError } from './api.js';
+import { uid, dueAt, alertBase, todayStr } from './util.js';
 
 const listeners = new Set();
 export const state = {
@@ -13,6 +13,7 @@ export const state = {
   pending: 0,
   sync: { status: 'idle', lastOk: null, error: null },
   settings: { theme: 'auto', lastBoard: null },
+  notify: { prefs: null, available: true },
 };
 
 export function subscribe(fn) { listeners.add(fn); return () => listeners.delete(fn); }
@@ -61,7 +62,25 @@ function stamp(prev) {
   return Math.max(Date.now(), (prev?.updatedAt || 0) + 1);
 }
 
-export async function save(kind, id, boardId, data) {
+/**
+ * Fechas de una tarjeta coherentes antes de guardarla: instante de vencimiento, referencia de los avisos y,
+ * la primera vez que recibe fecha, el recordatorio por defecto de esta persona.
+ */
+function normalize(kind, data) {
+  if (kind !== 'card') return data;
+  const d = { ...data };
+  if (!d.due) {
+    d.dueTime = ''; d.dueAt = null; d.alertBase = null;
+  } else {
+    d.dueAt = dueAt(d.due, d.dueTime);
+    d.alertBase = alertBase(d.due, d.dueTime);
+    if (!Array.isArray(d.reminders)) d.reminders = [...(state.notify.prefs?.defaultReminders || ['1h'])];
+  }
+  return d;
+}
+
+export async function save(kind, id, boardId, rawData) {
+  const data = normalize(kind, rawData);
   const prev = state.records.get(id);
   const r = { id, kind, boardId, data, updatedAt: stamp(prev), deleted: false, serverTs: prev?.serverTs || 0 };
   state.records.set(id, r);
@@ -71,7 +90,8 @@ export async function save(kind, id, boardId, data) {
 }
 
 export async function saveMany(list) {
-  const out = list.map(({ kind, id, boardId, data }) => {
+  const out = list.map(({ kind, id, boardId, data: rawData }) => {
+    const data = normalize(kind, rawData);
     const prev = state.records.get(id);
     const r = { id, kind, boardId, data, updatedAt: stamp(prev), deleted: false, serverTs: prev?.serverTs || 0 };
     state.records.set(id, r);
@@ -175,7 +195,7 @@ export async function createCard(boardId, columnId, fields, index = null) {
   const pos = index === null ? posAt(list, list.length) : posAt(list, index);
   const data = {
     columnId, title: fields.title, description: fields.description || '', start: '',
-    due: fields.due || '', dueTime: fields.dueTime || '', dueAt: dueAt(fields.due, fields.dueTime),
+    due: fields.due || '', dueTime: fields.dueTime || '',
     priority: '', labels: [], checklist: [], pos, done: !!col?.data.isDone, doneAt: col?.data.isDone ? Date.now() : null, archived: false,
   };
   const id = uid();
@@ -187,6 +207,30 @@ export async function setDue(cardId, due) {
   const card = record(cardId);
   if (!card) return;
   await save('card', cardId, card.boardId, { ...card.data, due, dueTime: due ? card.data.dueTime : '', dueAt: dueAt(due, card.data.dueTime) });
+}
+
+// ---------- Preferencias de avisos ----------
+export async function loadNotifyPrefs() {
+  try {
+    const r = await get('/api/push/prefs');
+    state.notify = r;
+    await db.setMeta('notify', r);
+    // La zona horaria del dispositivo, para el horario de silencio y el resumen diario (solo si aún no hay una;
+    // después se cambia a mano en Ajustes, para que dos dispositivos en zonas distintas no se la pisen).
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz && r.prefs.tz === 'UTC' && tz !== 'UTC') await setNotifyPrefs({ tz });
+    // Si este dispositivo ya tenía los avisos activados, se vuelve a asociar a la sesión actual.
+    import('./push.js').then((m) => m.resubscribe()).catch(() => {});
+    emit();
+  } catch { /* sin conexión: se usan las guardadas */ }
+}
+
+export async function setNotifyPrefs(patch) {
+  const r = await post('/api/push/prefs', patch);
+  state.notify = r;
+  await db.setMeta('notify', r);
+  emit();
+  return r;
 }
 
 // ---------- Carga y sesión ----------
@@ -203,6 +247,7 @@ export async function load() {
   state.user = user;
   const token = await db.getMeta('token');
   state.expiredUser = await db.getMeta('expiredUser');
+  state.notify = await db.getMeta('notify', state.notify);
   if (!token) state.user = null;
   setToken(token);
   syncCursor = cursor;
@@ -217,6 +262,7 @@ export async function signedIn(token, user) {
   } else {
     await db.wipe();
     state.records.clear(); state.roles.clear(); state.boardInfo.clear(); state.pending = 0; syncCursor = 0;
+    state.notify = { prefs: null, available: true };
   }
   setToken(token);
   state.user = user;
@@ -266,6 +312,7 @@ export async function signOutLocal() {
   await db.wipe();
   state.user = null; state.records.clear(); state.roles.clear(); state.boardInfo.clear();
   state.pending = 0; state.invitations = 0; syncCursor = 0;
+  state.notify = { prefs: null, available: true };
   emit();
 }
 

@@ -22,6 +22,7 @@ instalable (PWA) que funciona sin conexión y se aloja en tu propio servidor: tu
 - **Tableros compartidos**: el anfitrión invita a otros usuarios con permiso de *Lectura*, *Escritura* o *Todo*.
 - **Sin conexión**: todo se guarda en el dispositivo y se sincroniza al volver.
 - **Móvil y escritorio**, tema claro y oscuro.
+- **Avisos** antes de que venza una tarea (notificaciones push, también en iPhone), con horario de silencio y resumen diario.
 - **Privacidad**: sin correo, sin rastreadores, sin servicios de terceros. Cada uno puede descargar sus datos o borrar su cuenta.
 
 ## Probarlo en un minuto
@@ -56,7 +57,6 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 ## Hoja de ruta
 
-- **1.1**: avisos (notificaciones push) antes de que venza una tarea, con horario de silencio y resumen diario; se podrán desactivar en general, por tablero y por tarjeta.
 - **1.2**: temporizador pomodoro con estadísticas, tareas que se repiten y enlace de calendario (iCal).
 
 ## Licencia

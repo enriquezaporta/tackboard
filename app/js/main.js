@@ -8,6 +8,19 @@ import { renderBoards, renderBoard } from './views/board.js';
 import { renderCalendar } from './views/calendar.js';
 import { renderSettings, syncClass } from './views/settings.js';
 import { renderAuth, askConsent } from './views/auth.js';
+import { openCard } from './sheets.js';
+
+/** Al tocar un aviso se abre #/tarjeta/<id>: se muestra su tablero y encima la tarjeta. */
+let opening = null;
+async function openFromNotification(id) {
+  if (opening === id) return;
+  opening = id;
+  setTimeout(() => { opening = null; }, 2000);
+  let c = S.record(id);
+  if (!c) { await S.sync(); c = S.record(id); }
+  location.replace(c ? `#/tablero/${c.boardId}` : '#/hoy');
+  if (c) setTimeout(() => openCard(id), 50);
+}
 
 const main = document.getElementById('main');
 const tabbar = document.getElementById('tabbar');
@@ -70,6 +83,7 @@ function render() {
   else if (r.name === 'tablero') renderBoard(main, r.arg);
   else if (r.name === 'calendario') renderCalendar(main, r.arg);
   else if (r.name === 'ajustes') renderSettings(main);
+  else if (r.name === 'tarjeta') { openFromNotification(r.arg); return; }
   else renderToday(main);
   paint(main);
 }
@@ -105,7 +119,7 @@ S.subscribe(render);
   await S.load();
   lastRoute = location.hash;
   render();
-  if (S.state.user) S.sync();
+  if (S.state.user) { S.sync(); S.loadNotifyPrefs(); }
   document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.state.user) S.sync(); });
   window.addEventListener('online', () => S.state.user && S.sync());
   // Mientras la app está abierta, se recogen cada minuto los cambios de los tableros compartidos.
