@@ -157,6 +157,7 @@ button.chip[aria-pressed="true"] { background: var(--dark); color: var(--dark-in
 .list-row { min-height: 50px; padding: 10px 14px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid var(--line-soft); }
 .list-row:last-child { border-bottom: 0; }
 .list-row .grow { flex: 1; min-width: 0; }
+.list-row > .input.num { width: 130px; flex: none; }
 button.list-row, a.list-row { width: 100%; border-left: 0; border-right: 0; border-top: 0; background: none; text-align: left; text-decoration: none; color: inherit; }
 .empty { padding: 28px 20px; text-align: center; color: var(--muted); }
 .empty strong { display: block; color: var(--ink); font-size: 16px; margin-bottom: 4px; }

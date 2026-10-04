@@ -1,5 +1,10 @@
 # Cambios
 
+## 1.1.3 — 2026-10-04
+
+- *Columnas*: el campo «Límite WIP» ocupaba toda la fila y tapaba su texto. Ahora tiene ancho fijo. Lo mismo en
+  *Ajustes → Resumen diario → A las*.
+
 ## 1.1.2 — 2026-10-04
 
 - Actualizaciones fiables: al instalar una versión nueva, la app descarga todos sus archivos sin pasar por la caché

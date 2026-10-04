@@ -8,7 +8,7 @@ import { showRecoveryCode } from './auth.js';
 import { pushState, enablePush, disablePush, testPush } from '../push.js';
 const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 
-export const APP_VERSION = '1.1.2';
+export const APP_VERSION = '1.1.3';
 
 function syncText() {
   const s = S.state.sync;
@@ -141,7 +141,7 @@ function notifyHtml() {
       ${p.quiet.on ? `<div class="list-row times"><label for="np-qs">Desde</label><input id="np-qs" class="input time-input" type="time" value="${esc(p.quiet.start)}" ${dis}>
         <label for="np-qe">hasta</label><input id="np-qe" class="input time-input" type="time" value="${esc(p.quiet.end)}" ${dis}></div>` : ''}
       ${sw('np-digest', p.digest.on, 'Resumen diario', 'Cuántas tareas tienes para hoy y cuántas han vencido.', dis)}
-      ${p.digest.on ? `<div class="list-row"><label for="np-dt" class="grow">A las</label><input id="np-dt" class="input time-input" type="time" value="${esc(p.digest.time)}" ${dis}></div>` : ''}
+      ${p.digest.on ? `<div class="list-row"><label for="np-dt" class="grow">A las</label><input id="np-dt" class="input time-input num" type="time" value="${esc(p.digest.time)}" ${dis}></div>` : ''}
       <div class="list-row"><span class="grow">Zona horaria<br><span class="hint">Para el horario de silencio y el resumen diario.</span></span>
         <span class="small muted">${esc(p.tz)}</span>
         ${deviceTz() && deviceTz() !== p.tz ? `<button type="button" class="btn sm" id="np-tz">Usar ${esc(deviceTz())}</button>` : ''}</div>

@@ -358,7 +358,7 @@ export function openColumns(boardId) {
             <button type="button" class="icon-btn plain" data-move="-1" aria-label="Subir" ${i === 0 ? 'disabled' : ''}>${icon('left', 's')}</button>
             <button type="button" class="icon-btn plain" data-move="1" aria-label="Bajar" ${i === cols.length - 1 ? 'disabled' : ''}>${icon('right', 's')}</button></div>
           <div class="list-row"><label for="cw-${i}" class="grow">Límite WIP</label>
-            <input id="cw-${i}" class="input" type="number" min="0" max="999" inputmode="numeric" placeholder="Sin límite" value="${c.data.wip ?? ''}" data-f="wip"></div>
+            <input id="cw-${i}" class="input num" type="number" min="0" max="999" inputmode="numeric" placeholder="Sin límite" value="${c.data.wip ?? ''}" data-f="wip"></div>
           <div class="list-row"><label for="cd-${i}" class="grow">Columna de terminado</label>
             <span class="switch"><input id="cd-${i}" type="checkbox" data-f="isDone" ${c.data.isDone ? 'checked' : ''}><span></span></span></div>
           <div class="list-row"><span class="grow muted small">${plural(S.columnCards(c.id).length, 'tarjeta', 'tarjetas')}</span>
