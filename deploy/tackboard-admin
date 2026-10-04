@@ -8,7 +8,7 @@
 #   tackboard-admin signup on|off             abrir o cerrar el registro desde la app
 #   tackboard-admin operator "Nombre" "contacto"   responsable que aparece en la política de privacidad
 #   tackboard-admin proxy <ip> [ip…]|none     proxies inversos de confianza (IP real de los clientes)
-#   tackboard-admin backup [carpeta]          copia consistente de la base de datos
+#   tackboard-admin backup [carpeta]          copia consistente de la base de datos y de los adjuntos
 set -euo pipefail
 
 CONF=/etc/default/tackboard-api
@@ -71,6 +71,12 @@ with dst: src.backup(dst)
 PY
     chmod 600 "$F"
     echo "Copia: $F"
+    if [ -d /var/lib/tackboard/files ] && [ -n "$(ls -A /var/lib/tackboard/files 2>/dev/null)" ]; then
+      T="$DEST/tackboard-adjuntos-$(date +%Y%m%d-%H%M%S).tar.gz"
+      tar -C /var/lib/tackboard -czf "$T" files
+      chmod 600 "$T"
+      echo "Adjuntos: $T"
+    fi
     ;;
   users|adduser|passwd|disable|enable|deluser)
     run_py "$@"

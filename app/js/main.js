@@ -10,6 +10,7 @@ import { renderSettings, syncClass } from './views/settings.js';
 import { renderAuth, askConsent } from './views/auth.js';
 import { openCard } from './sheets.js';
 import { renderPomodoro } from './views/pomodoro.js';
+import { renderSearch } from './views/search.js';
 import { pomo, restorePomo, loadPomo, onTick, remaining, fmt, PHASE_NAME, resetPomo } from './pomo.js';
 
 /** Al tocar un aviso se abre #/tarjeta/<id>: se muestra su tablero y encima la tarjeta. */
@@ -51,8 +52,8 @@ function renderChrome(r) {
 
   const boards = S.boards();
   sidebar.innerHTML = `<div class="side-brand"><img src="icons/icon-192.png" alt="">Tackboard</div>
-    <nav class="side-nav">${TABS.map(([k, n, ic]) => `<a class="side-link" href="#/${k}" ${r.name === k ? 'aria-current="page"' : ''}>${icon(ic, 's')}<span class="grow">${n}</span>
-      ${k === 'tableros' && inv ? `<span class="badge">${inv}</span>` : ''}</a>`).join('')}</nav>
+    <nav class="side-nav">${[...TABS.slice(0, -1), ['buscar', 'Buscar', 'search'], TABS.at(-1)].map(([k, n, ic]) => `<a class="side-link" href="#/${k}" ${r.name === k ? 'aria-current="page"' : ''}>${icon(ic, 's')}<span class="grow">${n}</span>
+      ${k === 'tableros' && inv ? `<span class="badge">${inv}</span>` : ''}${k === 'buscar' ? '<kbd class="desk-only">/</kbd>' : ''}</a>`).join('')}</nav>
     <div class="side-nav"><div class="side-label">Tableros</div>
       ${boards.map((b) => `<a class="side-link" href="#/tablero/${esc(b.id)}" ${r.name === 'tablero' && r.arg === b.id ? 'aria-current="page"' : ''}>
         <span class="sq" data-c="${esc(b.data.color)}"></span><span class="grow">${esc(b.data.name)}</span>
@@ -89,6 +90,7 @@ function render() {
   else if (r.name === 'calendario') renderCalendar(main, r.arg);
   else if (r.name === 'ajustes') renderSettings(main);
   else if (r.name === 'pomodoro') renderPomodoro(main);
+  else if (r.name === 'buscar') renderSearch(main);
   else if (r.name === 'tarjeta') { openFromNotification(r.arg); return; }
   else renderToday(main);
   paint(main);
@@ -112,6 +114,14 @@ function updatePill(r = route()) {
   } else document.title = 'Tackboard';
 }
 onTick(() => updatePill());
+
+// «/» abre la búsqueda (si no se está escribiendo en algún campo).
+document.addEventListener('keydown', (e) => {
+  if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || !S.state.user) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]') || document.querySelector('.sheet')) return;
+  e.preventDefault();
+  if (route().name === 'buscar') document.getElementById('q')?.focus(); else location.hash = '#/buscar';
+});
 
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender) render(); }, 0));
 document.addEventListener('pointerup', () => setTimeout(() => { if (pendingRender) render(); }, 30));

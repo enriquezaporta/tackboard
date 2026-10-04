@@ -61,6 +61,8 @@ La técnica: 25 minutos concentrado en una sola cosa, 5 de descanso y, cada 4 po
 
 - Mientras hay uno en marcha, abajo a la izquierda se ve el tiempo que queda, en cualquier pantalla. En el escritorio
   también en el título de la pestaña.
+- **Modo enfoque**: con un pomodoro en marcha, pantalla completa con solo el tiempo, la tarea, su descripción y su
+  checklist (que puedes ir marcando). La pantalla no se apaga mientras está abierto. Se sale con la X o con Esc.
 - Un pomodoro detenido antes de tiempo no cuenta.
 - Las duraciones se cambian en la misma pantalla y se guardan en cada dispositivo. «Aviso al terminar» se puede apagar.
 - **Estadísticas** de 7 días, 30 días o el año: pomodoros, tiempo concentrado, días seguidos, por tablero y las tareas
@@ -85,6 +87,45 @@ Puedes quitar tableros del calendario, crear un enlace nuevo (el anterior deja d
 la contraseña o cerrar las demás sesiones también lo desactiva.
 
 El enlace es como una contraseña: quien lo tenga ve los títulos y fechas de tus tareas.
+
+## Adjuntos
+
+En una tarjeta, **Adjuntos → Añadir**: fotos (de la cámara o la galería) o PDF.
+
+- Las fotos se reducen a 2048 píxeles como mucho y se guardan como JPEG. Así pesan poco y **pierden los metadatos**
+  (ubicación GPS, modelo del teléfono…).
+- Hasta 10 MB por archivo y 20 por tarjeta. Cada tablero tiene 200 MB para adjuntos.
+- Toca una foto para verla en grande, descargarla o eliminarla. Un PDF se descarga al tocarlo.
+- Los ven todos los miembros del tablero; los añaden y eliminan quienes tienen permiso de escritura.
+- Necesitan conexión: no se guardan en el dispositivo para verlos sin conexión.
+
+El clip en una tarjeta indica cuántos adjuntos tiene.
+
+## Buscar
+
+La lupa de *Hoy* y de *Tableros* (en el escritorio, *Buscar* en la barra lateral o la tecla <kbd>/</kbd>) busca en
+el título, la descripción, la checklist y las etiquetas de todas tus tarjetas, de todos los tableros. Da igual
+escribir con o sin tildes.
+
+Filtros: pendientes, todas o hechas; tablero; fecha (vencidas, hoy, próximos 7 días, sin fecha); prioridad;
+etiqueta; e incluir las archivadas. Funciona sin conexión.
+
+## Plantillas
+
+Al crear un tablero eliges una plantilla:
+
+| Plantilla | Columnas |
+|---|---|
+| **Básico** | Por hacer → En curso (3) → Hecho |
+| **Proyecto** | Ideas → Por hacer → En curso → En revisión → Hecho, con etiquetas Error, Mejora y Urgente |
+| **Casa** | Pendiente → Esta semana → Hecho, con etiquetas Compras, Reparaciones, Limpieza y Papeleo |
+| **Homelab** | Ideas → Por hacer → En curso → Probando → Hecho, con tareas de mantenimiento de ejemplo |
+| **Viaje** | Ideas → Reservar → Preparar → Listo, con checklists de documentación y maleta |
+| **Mudanza** | Por hacer → En curso → Hecho, con los trámites y suministros típicos |
+
+**Tus plantillas**: menú de un tablero → *Guardar como plantilla*. Guarda columnas, límites y etiquetas y, si quieres,
+las tarjetas pendientes (sin fechas). Son solo tuyas y están en todos tus dispositivos. Se borran desde la propia
+lista al crear un tablero.
 
 ## Hoy
 

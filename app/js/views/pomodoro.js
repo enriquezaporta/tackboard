@@ -43,7 +43,8 @@ export function renderPomodoro(main) {
 
   let actions;
   if (a) {
-    actions = `<button type="button" class="btn grow" data-pomo="stop">Detener</button>`;
+    actions = `<button type="button" class="btn primary grow" data-focus>${icon('timer', 's')} Modo enfoque</button>
+      <button type="button" class="btn grow" data-pomo="stop">Detener</button>`;
   } else if (f?.phase === 'focus') {
     const br = nextBreak();
     actions = `<button type="button" class="btn primary grow" data-pomo="${br}">Empezar ${br === 'long' ? 'descanso largo' : 'descanso'} (${d[br]} min)</button>
@@ -134,6 +135,7 @@ function bind(main) {
       }
     } catch (e) { toast(errorText(e)); }
   }));
+  main.querySelector('[data-focus]')?.addEventListener('click', () => import('./focus.js').then((m) => m.openFocus()));
   main.querySelector('[data-open-card]')?.addEventListener('click', (e) => {
     import('../sheets.js').then((m) => m.openCard(e.currentTarget.dataset.openCard));
   });

@@ -11,7 +11,8 @@ export function renderBoards(main) {
   const t = todayStr();
   main.innerHTML = `<div class="page">
     <header class="page-head"><h1>Tableros</h1>
-      <button type="button" class="btn primary sm" data-act="new">${icon('plus', 's')} Nuevo tablero</button></header>
+      <span class="head-actions"><a class="icon-btn" href="#/buscar" aria-label="Buscar">${icon('search')}</a>
+      <button type="button" class="btn primary sm" data-act="new">${icon('plus', 's')} Nuevo tablero</button></span></header>
     <div class="section">
       ${S.state.invitations ? `<button type="button" class="callout list-row" data-act="inv">${icon('inbox')}
         <span class="grow">Tienes ${plural(S.state.invitations, 'invitación', 'invitaciones')}</span>${icon('right', 's')}</button><div class="sep"></div>` : ''}

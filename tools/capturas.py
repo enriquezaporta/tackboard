@@ -45,7 +45,8 @@ async ({ demo, sharedWith }) => {
     checklist: [{ id: 'a1', text: 'Recoger cifras', done: true }, { id: 'a2', text: 'Diapositivas', done: false }, { id: 'a3', text: 'Ensayo', done: false }] });
   await add(trabajo, 0, 'Revisar el contrato de mantenimiento', { due: d(-1), labels: ['l-cliente'] });
   await add(trabajo, 0, 'Ordenar la carpeta compartida', { labels: ['l-interno'] });
-  await add(trabajo, 1, 'Copia de seguridad semanal', { due: d(0), dueTime: '10:00', priority: 'medium',
+  await add(trabajo, 1, 'Copia de seguridad semanal', { due: d(0), dueTime: '10:00', priority: 'medium', reminders: ['1h'],
+    repeat: { freq: 'week', every: 1, days: [new Date().getDay()], day: null },
     description: 'Comprobar también que se puede restaurar.', checklist: [{ id: 'b1', text: 'Servidor', done: true }, { id: 'b2', text: 'Portátiles', done: false }] });
   await add(trabajo, 1, 'Actualizar la documentación', { labels: ['l-interno'] });
   await add(trabajo, 2, 'Enviar las facturas de septiembre', { due: d(-3) });
@@ -57,6 +58,17 @@ async ({ demo, sharedWith }) => {
   await add(viaje, 0, 'Reservar el alojamiento', { due: d(5) });
   await add(viaje, 0, 'Comprar los billetes de tren', { due: d(4), dueTime: '20:00' });
   await add(viaje, 1, 'Lista de lugares para visitar');
+  await m.sync();
+  // Una foto de ejemplo (dibujada aquí mismo) como adjunto.
+  const pres = m.cards((c) => c.data.title.startsWith('Preparar la presentación'))[0];
+  const cv = document.createElement('canvas'); cv.width = 1200; cv.height = 800;
+  const g = cv.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 1200, 800); grad.addColorStop(0, '#2457A6'); grad.addColorStop(1, '#0E6B62');
+  g.fillStyle = grad; g.fillRect(0, 0, 1200, 800);
+  g.fillStyle = 'rgba(255,255,255,.85)'; [[160, 520, 160, 200], [400, 400, 160, 320], [640, 300, 160, 420], [880, 180, 160, 540]].forEach(([x, y, w, h]) => g.fillRect(x, y, w, h));
+  const blob = await new Promise((r) => cv.toBlob(r, 'image/jpeg', 0.85));
+  const f = await import('/js/files.js');
+  await f.addFiles(pres.id, [new File([blob], 'grafico-trimestre.jpg', { type: 'image/jpeg' })]);
   await m.sync();
   if (sharedWith) {
     await api.post('/api/boards/' + casa + '/members', { username: sharedWith, role: 'write' });
@@ -99,16 +111,27 @@ async def main():
 
         async def shot(page, name, full=False):
             await page.wait_for_timeout(350)
+            await page.evaluate("document.getElementById('toast')?.classList.remove('show')")
+            await page.wait_for_timeout(250)
             await page.screenshot(path=os.path.join(OUT, name), full_page=full)
             print("  " + name)
 
-        await m.goto(BASE + "/#/hoy"); await shot(m, "movil-hoy.png")
+        await m.goto(BASE + "/#/hoy"); await m.wait_for_timeout(800); await shot(m, "movil-hoy.png")
         await m.goto(BASE + "/#/tablero/" + ids["trabajo"]); await shot(m, "movil-tablero.png")
         await m.click(".card:has-text('Preparar la presentación')"); await shot(m, "movil-tarjeta.png")
         await m.keyboard.press("Escape")
         await m.goto(BASE + "/#/calendario"); await shot(m, "movil-calendario.png")
         await m.goto(BASE + "/#/tablero/" + ids["casa"])
         await m.click("[data-act=share]"); await m.wait_for_selector("[data-role]"); await shot(m, "movil-compartir.png")
+        await m.keyboard.press("Escape")
+        await m.goto(BASE + "/#/buscar"); await m.fill("#q", "copia"); await shot(m, "movil-buscar.png")
+        await m.goto(BASE + "/#/tableros"); await m.click("[data-act=new]"); await m.wait_for_timeout(500)
+        await m.fill("#nb-name", "Mudanza"); await m.click(".tpl:has-text('Mudanza')"); await shot(m, "movil-plantillas.png")
+        await m.keyboard.press("Escape")
+        await m.goto(BASE + "/#/tablero/" + ids["trabajo"])
+        await m.click(".card:has-text('Preparar la presentación')"); await m.click("#c-pomo"); await m.wait_for_timeout(2500)
+        await shot(m, "movil-pomodoro.png")
+        await m.click("[data-focus]"); await shot(m, "movil-enfoque.png")
         await m.keyboard.press("Escape")
         await m.goto(BASE + "/#/ajustes"); await m.click("[data-theme-set=dark]")
         await m.goto(BASE + "/#/tablero/" + ids["trabajo"]); await shot(m, "movil-oscuro.png")
@@ -124,6 +147,8 @@ async def main():
         await dpage.goto(BASE + "/#/tablero/" + ids["trabajo"]); await shot(dpage, "escritorio-tablero.png")
         await dpage.goto(BASE + "/#/calendario"); await shot(dpage, "escritorio-calendario.png")
         await dpage.goto(BASE + "/#/hoy"); await shot(dpage, "escritorio-hoy.png")
+        await dpage.goto(BASE + "/#/pomodoro"); await dpage.wait_for_timeout(800); await shot(dpage, "escritorio-pomodoro.png")
+        await m.evaluate("import('/js/pomo.js').then(p => p.stopPomo())")
         await br.close()
 
 

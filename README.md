@@ -8,6 +8,11 @@ instalable (PWA) que funciona sin conexión y se aloja en tu propio servidor: tu
   <img src="docs/img/movil-tablero.png" alt="Tablero Kanban en el móvil" width="230">
   <img src="docs/img/movil-calendario.png" alt="Calendario en el móvil" width="230">
 </p>
+<p>
+  <img src="docs/img/movil-pomodoro.png" alt="Pomodoro en el móvil" width="230">
+  <img src="docs/img/movil-enfoque.png" alt="Modo enfoque" width="230">
+  <img src="docs/img/movil-buscar.png" alt="Búsqueda" width="230">
+</p>
 
 ![Tablero en el escritorio](docs/img/escritorio-tablero.png)
 
@@ -26,6 +31,9 @@ instalable (PWA) que funciona sin conexión y se aloja en tu propio servidor: tu
 - **Tareas que se repiten**: cada día, días laborables, ciertos días de la semana, cada mes, cada año o cada N.
 - **Pomodoro** ligado a las tarjetas, con aviso al terminar aunque la app esté cerrada y estadísticas.
 - **Calendario del móvil**: un enlace secreto (iCal) para ver tus tareas en el calendario del iPhone, Android u Outlook.
+- **Adjuntos**: fotos (reducidas y sin metadatos de ubicación) y PDF en las tarjetas.
+- **Búsqueda** en todas las tarjetas, con filtros, y **plantillas** de tablero (incluidas y propias).
+- **Modo enfoque**: pantalla completa con la tarea y el tiempo del pomodoro.
 - **Privacidad**: sin correo, sin rastreadores, sin servicios de terceros. Cada uno puede descargar sus datos o borrar su cuenta.
 
 ## Probarlo en un minuto
@@ -45,7 +53,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 | | |
 |---|---|
-| [Uso](docs/uso.md) | Tableros, tarjetas, repetición, calendario, pomodoro, avisos, compartir y ajustes |
+| [Uso](docs/uso.md) | Tableros, tarjetas, adjuntos, búsqueda, plantillas, repetición, calendario, pomodoro, avisos, compartir y ajustes |
 | [Instalación](docs/instalacion.md) | Debian/Proxmox (LXC), Docker, HTTPS, cortafuegos, copias y actualizaciones |
 | [Arquitectura](docs/arquitectura.md) | Cómo funciona por dentro: datos, sincronización y permisos |
 | [Seguridad](docs/seguridad.md) | Medidas aplicadas y cómo avisar de un fallo |
@@ -60,7 +68,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 ## Hoja de ruta
 
-Ideas para más adelante: plantillas de tablero, adjuntos, búsqueda global y modo de enfoque con el pomodoro.
+Ideas para más adelante: comentarios en las tarjetas, asignar tareas a miembros y vista de actividad del tablero.
 
 ## Licencia
 

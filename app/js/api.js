@@ -36,6 +36,9 @@ const MESSAGES = {
   push_unavailable: 'El servidor no tiene activados los avisos (falta python3-cryptography).',
   push_endpoint: 'Este navegador usa un servicio de avisos no admitido.',
   push_keys: 'Las claves de avisos del dispositivo no son válidas.',
+  too_big: 'El archivo es demasiado grande (máximo 10 MB).',
+  file_type: 'Ese tipo de archivo no está admitido: fotos (JPEG, PNG, WebP) o PDF.',
+  not_found: 'No se ha encontrado.',
 };
 export const errorText = (e) => MESSAGES[e?.code] || (e?.status ? `Error del servidor (${e.status}).` : MESSAGES.network);
 
@@ -63,3 +66,27 @@ export async function api(method, path, body) {
 export const get = (p) => api('GET', p);
 export const post = (p, b = {}) => api('POST', p, b);
 export const del = (p) => api('DELETE', p, {});
+
+/** Sube un archivo tal cual (sin JSON). */
+export async function upload(path, blob) {
+  let res;
+  try {
+    res = await fetch(path, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': blob.type }, body: blob, credentials: 'omit' });
+  } catch { throw new ApiError(0, 'network'); }
+  let data = null;
+  try { data = await res.json(); } catch { /* sin JSON */ }
+  if (!res.ok) {
+    if (res.status === 401) onAuthLost();
+    throw new ApiError(res.status, data?.error || (res.status === 413 ? 'too_big' : 'http'));
+  }
+  return data;
+}
+
+/** Descarga un archivo protegido y devuelve un Blob. */
+export async function download(path) {
+  let res;
+  try { res = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, credentials: 'omit' }); }
+  catch { throw new ApiError(0, 'network'); }
+  if (!res.ok) throw new ApiError(res.status, res.status === 404 ? 'not_found' : 'http');
+  return res.blob();
+}

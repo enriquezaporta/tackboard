@@ -129,7 +129,7 @@ function repeatHook(it, extra, drop, notes) {
     extra.push({ kind: 'card', id, boardId: it.boardId, data: {
       ...d, columnId: col.id, pos: posAt(columnCards(col.id), 0), due: next,
       start: d.start ? addDays(d.start, shift) : '', done: false, doneAt: null, archived: false,
-      checklist: (d.checklist || []).map((x) => ({ ...x, done: false })), repeatedAs: null,
+      checklist: (d.checklist || []).map((x) => ({ ...x, done: false })), repeatedAs: null, attachments: [],
     } });
     const when = dueLabel(next, d.dueTime).toLowerCase();
     notes.push(`Se repite: la siguiente vence ${/^(hoy|mañana)/.test(when) ? when : `el ${when}`}.`);

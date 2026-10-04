@@ -12,7 +12,8 @@
 		trusted_proxies_strict
 		timeouts {
 			read_header 10s
-			read_body 30s
+			# Hasta 2 minutos para recibir el cuerpo: un adjunto de 10 MB desde el móvil con poca cobertura.
+			read_body 2m
 			idle 2m
 		}
 	}
@@ -33,13 +34,27 @@
 		-Server
 	}
 
-	# Tamaño máximo de las peticiones: 8 MB para sincronizar, 256 KB para el resto.
+	# Tamaño máximo de las peticiones: 8 MB para sincronizar, 11 MB para subir adjuntos, 256 KB para el resto.
 	request_body /api/sync {
 		max_size 8MB
 	}
-	@notsync not path /api/sync
-	request_body @notsync {
+	request_body /api/files {
+		max_size 11MB
+	}
+	@small not path /api/sync /api/files
+	request_body @small {
 		max_size 256KB
+	}
+
+	# Adjuntos: Caddy recibe el archivo entero (hasta 11 MB) antes de pasarlo al backend.
+	handle /api/files {
+		reverse_proxy 127.0.0.1:{$TB_API_PORT:8000} {
+			header_up X-Real-IP {client_ip}
+			request_buffers 11MB
+			transport http {
+				keepalive off
+			}
+		}
 	}
 
 	handle /api/* {

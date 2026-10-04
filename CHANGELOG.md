@@ -1,5 +1,18 @@
 # Cambios
 
+## 1.3.0 — 2026-10-04
+
+- **Adjuntos** en las tarjetas: fotos y PDF. Las fotos se reducen a 2048 px y pierden los metadatos (ubicación) en el
+  dispositivo antes de subirse. Visor a pantalla completa. Cupos: 10 MB por archivo, 20 por tarjeta, 200 MB por tablero.
+- **Búsqueda** en todas las tarjetas (título, descripción, checklist y etiquetas, sin importar las tildes), con filtros
+  por estado, tablero, fecha, prioridad y etiqueta. Tecla <kbd>/</kbd> en el escritorio.
+- **Plantillas de tablero**: seis incluidas (Básico, Proyecto, Casa, Homelab, Viaje, Mudanza) y las tuyas, guardando
+  cualquier tablero como plantilla.
+- **Modo enfoque** durante un pomodoro: pantalla completa con la tarea y su checklist, sin que se apague la pantalla.
+- Las copias de `tackboard-admin backup` incluyen los adjuntos.
+- La política de privacidad se actualiza con los adjuntos y las plantillas (se pide aceptarla de nuevo).
+- Revisión de seguridad independiente: 1 fallo medio y 6 bajos, corregidos (ver docs/seguridad.md).
+
 ## 1.2.1 — 2026-10-04
 
 - Compartir un tablero recién creado ya no dice «No tienes permiso»: antes de cargar los miembros se envían los cambios pendientes.

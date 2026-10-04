@@ -30,6 +30,7 @@ export function boardCard(card, board, draggable) {
     d.due && !d.done && d.reminders?.length ? `<span class="tag" title="Con aviso">${icon('bell', 's')}</span>` : '',
     d.repeat?.freq ? `<span class="tag" title="Se repite">${icon('repeat', 's')}</span>` : '',
     d.description ? `<span class="tag" title="Tiene descripción">${icon('text', 's')}</span>` : '',
+    d.attachments?.length ? `<span class="tag" title="Adjuntos">${icon('clip', 's')}${d.attachments.length}</span>` : '',
   ].filter(Boolean).join('');
   return `<button type="button" class="card ${late ? 'overdue' : ''} ${d.done ? 'is-done' : ''}" data-open="${esc(card.id)}"
       ${draggable ? `data-drag="${esc(card.id)}"` : ''}>

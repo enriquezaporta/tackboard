@@ -39,6 +39,17 @@ al crear la cuenta y, si cambian, se vuelven a pedir.
     los datos acaban en ese servicio. La app recomienda en el iPhone guardarlo «En mi iPhone».
   - Se desactiva a mano, al crear otro, al cambiar la contraseña, al cerrar las demás sesiones y al recuperar la cuenta.
 
+## Adjuntos y plantillas
+
+- **Adjuntos.** Las fotos se reducen y se vuelven a codificar en el dispositivo antes de subirlas, así que no llegan
+  al servidor los metadatos EXIF (ubicación GPS, cámara, fecha original). Los PDF se guardan tal cual: pueden llevar
+  metadatos propios (autor, programa).
+  - Se guarda quién subió cada adjunto. Si esa persona borra su cuenta, el adjunto se queda en el tablero, sin autor.
+  - Se borran al quitarlos de la tarjeta, al borrar la tarjeta o el tablero (al día siguiente como mucho) y con la cuenta
+    si el tablero era suyo.
+  - La exportación incluye la lista de adjuntos (nombre, tipo, tamaño, fecha), no los archivos: se descargan desde la app.
+- **Plantillas propias.** Solo las ve su dueño. Se borran desde la app o con la cuenta, y van en la exportación.
+
 ## Uso doméstico
 
 Si solo la usáis en casa y entre conocidos, el RGPD prácticamente no aplica (excepción doméstica, art. 2.2.c).

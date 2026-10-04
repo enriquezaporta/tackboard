@@ -21,7 +21,8 @@ export function renderToday(main) {
   main.innerHTML = `<div class="page">
     <header class="page-head">
       <div><div class="eyebrow">${esc(DOW[now.getDay()])} · ${now.getDate()} ${esc(MONTHS[now.getMonth()])}</div><h1>Hoy</h1></div>
-      ${hasBoards ? `<button type="button" class="btn primary desk-only" data-act="new-task">${icon('plus', 's')} Nueva tarea</button>` : ''}
+      <span class="head-actions"><a class="icon-btn" href="#/buscar" aria-label="Buscar">${icon('search')}</a>
+      ${hasBoards ? `<button type="button" class="btn primary desk-only" data-act="new-task">${icon('plus', 's')} Nueva tarea</button>` : ''}</span>
     </header>
     ${S.state.invitations ? `<div class="section"><button type="button" class="callout list-row" data-act="invitations">
       ${icon('inbox')}<span class="grow">Tienes ${plural(S.state.invitations, 'invitación', 'invitaciones')} a tableros</span>${icon('right', 's')}</button></div>` : ''}

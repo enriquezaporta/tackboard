@@ -217,11 +217,13 @@ Variables de entorno:
 | `TB_ALLOW_SIGNUP` | `1` | `0` cierra el registro desde la app |
 | `TB_TRUSTED_PROXIES` | `127.0.0.1/32` (en el compose, la red de Docker) | Proxies de los que se acepta la IP real del cliente |
 | `TB_HTTP_PORT` | `8080` | Puerto de Caddy dentro del contenedor |
+| `TB_FILES_MAX_MB` | `5120` | Espacio máximo para adjuntos en toda la instalación (MB) |
+| `TB_FILES` | `files` junto a la base de datos | Carpeta de los adjuntos |
 
 ## Copias de seguridad
 
-Todo está en un único archivo SQLite. Haz copias con la orden de administración, no copiando el archivo en
-caliente:
+Los datos están en un archivo SQLite y los adjuntos, en la carpeta `files` de al lado (`/var/lib/tackboard/files`).
+Haz copias con la orden de administración, no copiando la base de datos en caliente. Copia las dos cosas:
 
 ```bash
 tackboard-admin backup /ruta/de/copias
@@ -232,6 +234,7 @@ Con Docker:
 ```bash
 docker exec tackboard python3 -c "import sqlite3;s=sqlite3.connect('/data/tackboard.db');d=sqlite3.connect('/data/copia.db');s.backup(d)"
 docker cp tackboard:/data/copia.db .
+docker cp tackboard:/data/files ./adjuntos
 ```
 
 ### En Proxmox: copia diaria del contenedor
@@ -253,7 +256,8 @@ pvesh create /cluster/backup --id tackboard-diario --vmid 130 --schedule "03:30"
 Guárdalas fuera del servidor y, si salen de casa, cifradas. Para restaurar:
 
 1. Para el servicio: `systemctl stop tackboard-api`.
-2. Sustituye `/var/lib/tackboard/tackboard.db` por la copia (propietario `tackboard`, permisos `600`).
+2. Sustituye `/var/lib/tackboard/tackboard.db` por la copia (propietario `tackboard`, permisos `600`) y, si hay
+   adjuntos, descomprime su copia en `/var/lib/tackboard` (`tar -C /var/lib/tackboard -xzf tackboard-adjuntos-….tar.gz`).
 3. Arranca de nuevo el servicio.
 
 ## Probar en local sin instalar nada

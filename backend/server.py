@@ -68,12 +68,13 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
-VERSION = "1.2.1"
-POLICY_VERSION = "2026-10-04"
+VERSION = "1.3.0"
+POLICY_VERSION = "2026-10-04-2"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")
+FILES_DIR = os.environ.get("TB_FILES") or os.path.join(os.path.dirname(DB_PATH) or ".", "files")
 HOST = os.environ.get("TB_HOST", "127.0.0.1")
 PORT = int(os.environ.get("TB_PORT", "8000"))
 
@@ -88,6 +89,11 @@ TOKEN_MAX = 365 * 86400
 
 MAX_BODY_SYNC = 8 * 1024 * 1024
 MAX_BODY = 256 * 1024
+MAX_FILE = 10 * 1024 * 1024            # un adjunto
+MAX_BOARD_FILES = 200 * 1024 * 1024    # adjuntos de un tablero
+MAX_CARD_FILES = 20                    # adjuntos por tarjeta
+FILES_TOTAL = int(os.environ.get("TB_FILES_MAX_MB", "5120")) * 1024 * 1024  # toda la instalación
+FILE_TYPES = {"image/jpeg": b"\xff\xd8\xff", "image/png": b"\x89PNG\r\n\x1a\n", "image/webp": b"RIFF", "application/pdf": b"%PDF-"}
 MAX_CHANGES = 5000
 PAGE = 2000
 
@@ -239,6 +245,28 @@ CREATE TABLE IF NOT EXISTS ical_tokens (
   excluded TEXT NOT NULL DEFAULT '[]',
   last_fetch INTEGER
 );
+-- Adjuntos de las tarjetas. El archivo está en FILES_DIR/<2 primeros caracteres>/<id>.
+CREATE TABLE IF NOT EXISTS attachments (
+  id TEXT PRIMARY KEY,
+  board_id TEXT NOT NULL,
+  card_id TEXT NOT NULL,
+  user_id INTEGER,
+  name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS attachments_board ON attachments(board_id);
+CREATE INDEX IF NOT EXISTS attachments_card ON attachments(card_id);
+-- Plantillas de tablero de cada persona.
+CREATE TABLE IF NOT EXISTS templates (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS templates_user ON templates(user_id);
 -- Ajustes internos (claves VAPID).
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -522,6 +550,50 @@ def clean_column(d):
 
 
 REPEAT_FREQ = ("day", "weekday", "week", "month", "year")
+MAX_TEMPLATES = 30
+MAX_TEMPLATE_BYTES = 256 * 1024
+
+
+def clean_template(d):
+    """Plantilla de tablero: columnas, etiquetas y, si se quiere, tarjetas de ejemplo (sin fechas ni personas)."""
+    if not isinstance(d, dict):
+        raise Invalid("template")
+    board_part = clean_board({"name": d.get("name"), "color": d.get("color"), "labels": d.get("labels"), "pos": 0})
+    cols = d.get("columns")
+    if not isinstance(cols, list) or not 1 <= len(cols) <= MAX_COLUMNS:
+        raise Invalid("columns")
+    columns = []
+    for c in cols:
+        if not isinstance(c, dict):
+            raise Invalid("columns")
+        cc = clean_column({"name": c.get("name"), "wip": c.get("wip"), "isDone": c.get("isDone"), "pos": 0})
+        columns.append({"name": cc["name"], "wip": cc["wip"], "isDone": cc["isDone"]})
+    label_ids = {lb["id"] for lb in board_part["labels"]}
+    cards_in = d.get("cards") or []
+    if not isinstance(cards_in, list) or len(cards_in) > 300:
+        raise Invalid("cards")
+    cards = []
+    for c in cards_in:
+        if not isinstance(c, dict):
+            raise Invalid("cards")
+        col = c.get("col")
+        if type(col) is not int or not 0 <= col < len(columns):
+            raise Invalid("cards")
+        prio = c.get("priority") or ""
+        if prio not in ("", "low", "medium", "high"):
+            raise Invalid("cards")
+        labels = c.get("labels") or []
+        if not isinstance(labels, list) or not all(isinstance(x, str) and x in label_ids for x in labels):
+            raise Invalid("cards")
+        check = c.get("checklist") or []
+        if not isinstance(check, list) or len(check) > 100 or not all(isinstance(x, dict) for x in check):
+            raise Invalid("cards")
+        cards.append({"col": col, "title": v_str(c.get("title"), 200, "cards", allow_empty=False),
+                      "description": v_str(c.get("description"), 10000, "cards", multiline=True), "priority": prio,
+                      "labels": list(dict.fromkeys(labels)),
+                      "checklist": [{"text": v_str(x.get("text"), 300, "cards", allow_empty=False)} for x in check]})
+    return {"name": board_part["name"][:60], "color": board_part["color"], "labels": board_part["labels"],
+            "columns": columns, "cards": cards}
 
 
 def clean_card(d):
@@ -579,6 +651,18 @@ def clean_card(d):
                     or (day is not None and (type(day) is not int or not 1 <= day <= 31)):
                 raise Invalid("repeat")
             repeat = {"freq": repeat["freq"], "every": every, "days": sorted(set(days)), "day": day}
+    atts = d.get("attachments") or []
+    if not isinstance(atts, list) or len(atts) > MAX_CARD_FILES:
+        raise Invalid("attachments")
+    out_atts = []
+    for a in atts:
+        if not isinstance(a, dict) or a.get("mime") not in FILE_TYPES:
+            raise Invalid("attachments")
+        out_atts.append({"id": v_ref(a.get("id"), "attachments", allow_none=False),
+                         "name": v_str(a.get("name"), 120, "attachments", allow_empty=False),
+                         "mime": a["mime"], "size": v_int_or_none(a.get("size"), "attachments", 0, MAX_FILE) or 0,
+                         "w": v_int_or_none(a.get("w"), "attachments", 0, 20000),
+                         "h": v_int_or_none(a.get("h"), "attachments", 0, 20000)})
     repeated_as = d.get("repeatedAs")
     if repeated_as is not None:
         if not isinstance(repeated_as, dict):
@@ -605,6 +689,7 @@ def clean_card(d):
         "archived": v_bool(d.get("archived"), "archived"),
         "repeat": repeat,
         "repeatedAs": repeated_as,
+        "attachments": out_atts,
     }
 
 
@@ -635,7 +720,9 @@ POMO_USER = RateLimiter(120, 3600)      # inicios/paradas de pomodoro por person
 ICAL_NEW = RateLimiter(10, 3600)        # enlaces nuevos por persona
 ICAL_TOKEN = RateLimiter(60, 3600)      # descargas por enlace
 ICAL_BAD_IP = RateLimiter(20, 3600)     # enlaces no válidos por IP
-LIMITERS = LIMITERS + (PUSH_TEST, POMO_USER, ICAL_NEW, ICAL_TOKEN, ICAL_BAD_IP)
+TEMPLATE_USER = RateLimiter(60, 3600)  # plantillas guardadas por persona
+FILE_USER = RateLimiter(120, 3600)     # adjuntos subidos por persona
+LIMITERS = LIMITERS + (PUSH_TEST, POMO_USER, ICAL_NEW, ICAL_TOKEN, ICAL_BAD_IP, TEMPLATE_USER, FILE_USER)
 
 
 def b64u(data):
@@ -1633,7 +1720,177 @@ class IcalApi:
         return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
 
 
-class App(PushApi, PomoApi, IcalApi):
+class TemplateApi:
+    def templates(self, u):
+        with self.s.lock:
+            rows = self.s.q("SELECT id, data, created_at FROM templates WHERE user_id=? ORDER BY created_at", (u["id"],))
+        return {"templates": [{"id": r["id"], "createdAt": r["created_at"], **json.loads(r["data"])} for r in rows]}
+
+    def template_save(self, u, body):
+        if not TEMPLATE_USER.hit(u["id"]):
+            raise ApiError(429, "rate")
+        try:
+            data = clean_template(body)
+        except Invalid as e:
+            raise ApiError(400, "invalid:%s" % e)
+        raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        if len(raw.encode()) > MAX_TEMPLATE_BYTES:
+            raise ApiError(400, "too_big")
+        with self.s.lock:
+            if self.s.one("SELECT COUNT(*) FROM templates WHERE user_id=?", (u["id"],))[0] >= MAX_TEMPLATES:
+                raise ApiError(400, "limit")
+            tid = b64u(os.urandom(16))
+            self.s.x("INSERT INTO templates(id,user_id,name,data,created_at) VALUES(?,?,?,?,?)",
+                     (tid, u["id"], data["name"], raw, now()))
+        return self.templates(u)
+
+    def template_delete(self, u, tid):
+        with self.s.lock:
+            self.s.x("DELETE FROM templates WHERE id=? AND user_id=?", (tid, u["id"]))
+        return self.templates(u)
+
+
+def files_gc(store, now_s=None):
+    """Adjuntos que ya no usa ninguna tarjeta (tarjeta borrada o adjunto quitado). Se espera un día por si el
+    cambio de la tarjeta aún no ha llegado desde el dispositivo. Las filas se borran con el candado; los archivos,
+    fuera. También se barren archivos sin fila y restos de subidas cortadas."""
+    now_s = now_s or now()
+    old = now_s - 86400
+    gone = []
+    with store.lock:
+        for r in store.q("""SELECT a.id, a.card_id, rec.data, rec.deleted FROM attachments a
+                            LEFT JOIN records rec ON rec.id=a.card_id WHERE a.created_at < ?""", (old,)):
+            if r["data"] is None or r["deleted"]:
+                gone.append(r["id"])
+                continue
+            try:
+                used = {x.get("id") for x in json.loads(r["data"]).get("attachments") or []}
+            except ValueError:
+                used = set()
+            if r["id"] not in used:
+                gone.append(r["id"])
+        for i in range(0, len(gone), 500):
+            part = gone[i:i + 500]
+            store.x("DELETE FROM attachments WHERE id IN (%s)" % ",".join("?" * len(part)), part)
+        known = {r["id"] for r in store.q("SELECT id FROM attachments")}
+    for fid in gone:
+        try:
+            os.remove(file_path(fid))
+        except OSError:
+            pass
+    swept = 0
+    try:
+        subdirs = os.listdir(FILES_DIR)
+    except OSError:
+        subdirs = []
+    for d in subdirs:
+        full = os.path.join(FILES_DIR, d)
+        if not os.path.isdir(full):
+            continue
+        for f in os.listdir(full):
+            fp = os.path.join(full, f)
+            try:
+                if os.path.getmtime(fp) < old and (f.endswith(".part") or f not in known):
+                    os.remove(fp)
+                    swept += 1
+            except OSError:
+                pass
+    return len(gone) + swept
+
+
+class FileApi:
+    def check_file_quota(self, card_id, board_id, n):
+        if self.s.one("SELECT COUNT(*) FROM attachments WHERE card_id=?", (card_id,))[0] >= MAX_CARD_FILES:
+            raise ApiError(400, "limit")
+        used_board = self.s.one("SELECT COALESCE(SUM(size),0) FROM attachments WHERE board_id=?", (board_id,))[0]
+        used_all = self.s.one("SELECT COALESCE(SUM(size),0) FROM attachments")[0]
+        if used_board + n > MAX_BOARD_FILES or used_all + n > FILES_TOTAL:
+            raise ApiError(400, "limit")
+
+    def file_upload(self, u, handler, query):
+        if not FILE_USER.hit(u["id"]):
+            raise ApiError(429, "rate")
+        q = parse_qs(query)
+        card_id = (q.get("card") or [""])[0]
+        name = clean_name((q.get("name") or [""])[0], 120) or "archivo"
+        mime = (handler.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not ID_RE.match(card_id) or mime not in FILE_TYPES:
+            raise ApiError(400, "invalid")
+        try:
+            n = int(handler.headers.get("Content-Length") or "-1")
+        except ValueError:
+            raise ApiError(400, "length")
+        if handler.headers.get("Transfer-Encoding"):
+            raise ApiError(411, "length")
+        if n <= 0 or n > MAX_FILE:
+            raise ApiError(413, "too_big")
+        with self.s.lock:
+            rec = self.s.one("SELECT board_id FROM records WHERE id=? AND kind='card' AND deleted=0", (card_id,))
+            m = rec and self.membership(rec["board_id"], u["id"])
+            if not m or ROLE_RANK[m["role"]] < ROLE_RANK["write"]:
+                raise ApiError(403, "forbidden")
+            board_id = rec["board_id"]
+            self.check_file_quota(card_id, board_id, n)
+        # El archivo se escribe por trozos (sin cargarlo entero en memoria) y se comprueba su tipo real.
+        fid = b64u(os.urandom(16))
+        path = file_path(fid)
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+        tmp = path + ".part"
+        left, first = n, b""
+        try:
+            with open(os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as f:
+                while left:
+                    chunk = handler.rfile.read(min(65536, left))
+                    if not chunk:
+                        raise ApiError(400, "length")
+                    if len(first) < 16:
+                        first += chunk[:16]
+                    f.write(chunk)
+                    left -= len(chunk)
+            handler.body_read = True
+            magic = FILE_TYPES[mime]
+            if not first.startswith(magic) or (mime == "image/webp" and first[8:12] != b"WEBP"):
+                raise ApiError(415, "file_type")
+            with self.s.lock:
+                # Puede haber cambiado mientras se recibía: permisos y cupos se comprueban otra vez (si no, varias
+                # subidas a la vez pasarían todas la primera comprobación).
+                m = self.membership(board_id, u["id"])
+                if not m or ROLE_RANK[m["role"]] < ROLE_RANK["write"] or \
+                        not self.s.one("SELECT 1 FROM records WHERE id=? AND deleted=0", (card_id,)):
+                    raise ApiError(403, "forbidden")
+                self.check_file_quota(card_id, board_id, n)
+                self.s.x("INSERT INTO attachments(id,board_id,card_id,user_id,name,mime,size,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                         (fid, board_id, card_id, u["id"], name, mime, n, now()))
+                try:
+                    os.replace(tmp, path)
+                except OSError:
+                    self.s.x("DELETE FROM attachments WHERE id=?", (fid,))
+                    raise
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        return {"id": fid, "name": name, "mime": mime, "size": n}
+
+    def file_get(self, u, fid):
+        with self.s.lock:
+            a = self.s.one("SELECT * FROM attachments WHERE id=?", (fid,))
+            if not a or not self.membership(a["board_id"], u["id"]) or \
+                    not self.s.one("SELECT 1 FROM records WHERE id=? AND deleted=0", (a["card_id"],)):
+                raise ApiError(404, "not_found")
+        return dict(a)
+
+    def file_delete(self, u, fid):
+        with self.s.lock:
+            a = self.s.one("SELECT board_id FROM attachments WHERE id=?", (fid,))
+            if a:
+                m = self.membership(a["board_id"], u["id"])
+                if not m or ROLE_RANK[m["role"]] < ROLE_RANK["write"]:
+                    raise ApiError(404, "not_found")
+                delete_files(self.s, "id=?", (fid,))
+        return {"ok": True}
+
+
+class App(PushApi, PomoApi, IcalApi, TemplateApi, FileApi):
     def __init__(self, store):
         self._vapid = None
         self.s = store
@@ -1900,6 +2157,10 @@ class App(PushApi, PomoApi, IcalApi):
             pomodoros = [{"cardId": r["card_id"], "boardId": r["board_id"], "startedAt": r["started_at"], "minutes": r["minutes"]}
                          for r in self.s.q("SELECT * FROM pomo_log WHERE user_id=? ORDER BY started_at", (u["id"],))]
             ical = self.s.one("SELECT created_at, excluded, last_fetch FROM ical_tokens WHERE user_id=?", (u["id"],))
+            templates = [json.loads(r["data"]) for r in self.s.q("SELECT data FROM templates WHERE user_id=? ORDER BY created_at", (u["id"],))]
+            files = [{"id": r["id"], "boardId": r["board_id"], "cardId": r["card_id"], "name": r["name"], "type": r["mime"],
+                      "size": r["size"], "createdAt": r["created_at"]}
+                     for bid in ids for r in self.s.q("SELECT * FROM attachments WHERE board_id=?", (bid,))]
         return {
             "app": "Tackboard",
             "exportedAt": now(),
@@ -1912,6 +2173,8 @@ class App(PushApi, PomoApi, IcalApi):
             "pushDevices": push,
             "notificationPrefs": notify_prefs,
             "pomodoros": pomodoros,
+            "templates": templates,
+            "attachments": files,
             "calendarLink": {"createdAt": ical["created_at"], "excludedBoards": json.loads(ical["excluded"]),
                              "lastFetch": ical["last_fetch"]} if ical else None,
         }
@@ -2022,6 +2285,13 @@ class App(PushApi, PomoApi, IcalApi):
                 raise ApiError(400, "invalid:%s" % e)
             # La "siguiente" de una tarea que se repite solo puede estar en el mismo tablero (si no, el cliente de
             # otra persona podría acabar borrando una tarjeta de un tablero ajeno al reabrir esta).
+            if kind == "card" and data.get("attachments"):
+                # Solo adjuntos subidos a esta tarjeta (no se puede "enlazar" un archivo de otra).
+                own = {r["id"]: r for r in self.s.q("SELECT id, name, mime, size FROM attachments WHERE card_id=? AND board_id=?",
+                                                     (rid, board_id))}
+                # Nombre, tipo y tamaño, los del servidor (no los que diga el cliente).
+                data["attachments"] = [{**a, "name": own[a["id"]]["name"], "mime": own[a["id"]]["mime"], "size": own[a["id"]]["size"]}
+                                       for a in data["attachments"] if a["id"] in own]
             if kind == "card" and data.get("repeatedAs"):
                 ref = self.s.one("SELECT board_id FROM records WHERE id=?", (data["repeatedAs"]["id"],))
                 if ref and ref["board_id"] != board_id:
@@ -2207,7 +2477,24 @@ class App(PushApi, PomoApi, IcalApi):
         return {"ok": True}
 
 
+def file_path(fid):
+    return os.path.join(FILES_DIR, fid[:2], fid)
+
+
+def delete_files(store, where, args):
+    """Borra adjuntos (filas y archivos). `where` es una condición SQL sobre la tabla attachments."""
+    ids = [r["id"] for r in store.q("SELECT id FROM attachments WHERE " + where, args)]
+    store.x("DELETE FROM attachments WHERE " + where, args)
+    for fid in ids:
+        try:
+            os.remove(file_path(fid))
+        except OSError:
+            pass
+    return len(ids)
+
+
 def delete_board(store, board_id):
+    delete_files(store, "board_id=?", (board_id,))
     store.x("DELETE FROM records WHERE board_id=?", (board_id,))
     store.x("DELETE FROM members WHERE board_id=?", (board_id,))
     store.x("INSERT OR IGNORE INTO deleted_boards(id, deleted_at) VALUES(?,?)", (board_id, now()))
@@ -2227,6 +2514,8 @@ def delete_user(store, uid):
     store.x("DELETE FROM pomo_active WHERE user_id=?", (uid,))
     store.x("DELETE FROM pomo_log WHERE user_id=?", (uid,))
     store.x("DELETE FROM ical_tokens WHERE user_id=?", (uid,))
+    store.x("DELETE FROM templates WHERE user_id=?", (uid,))
+    store.x("UPDATE attachments SET user_id=NULL WHERE user_id=?", (uid,))
     store.x("DELETE FROM users WHERE id=?", (uid,))
 
 
@@ -2236,6 +2525,8 @@ def delete_user(store, uid):
 
 ROUTE_MEMBERS = re.compile(r"^/api/boards/([A-Za-z0-9_-]{8,64})/members$")
 ROUTE_MEMBER = re.compile(r"^/api/boards/([A-Za-z0-9_-]{8,64})/members/([a-z0-9_.-]{3,30})$")
+ROUTE_FILE = re.compile(r"^/api/files/([A-Za-z0-9_-]{8,64})$")
+ROUTE_TEMPLATE = re.compile(r"^/api/templates/([A-Za-z0-9_-]{8,64})$")
 ROUTE_INVITE = re.compile(r"^/api/invitations/([A-Za-z0-9_-]{8,64})$")
 
 
@@ -2263,6 +2554,30 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def send_file(self, a):
+        try:
+            f = open(file_path(a["id"]), "rb")
+        except OSError:
+            raise ApiError(404, "not_found")
+        with f:
+            size = os.fstat(f.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", a["mime"])
+            self.send_header("Content-Length", str(size))
+            # Se puede guardar un día en el navegador, solo para esta sesión (Vary: Authorization).
+            self.send_header("Cache-Control", "private, max-age=86400")
+            self.send_header("Vary", "Authorization")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Content-Security-Policy", "default-src 'none'; sandbox")
+            disp = "inline" if a["mime"].startswith("image/") else "attachment"
+            self.send_header("Content-Disposition", "%s; filename*=UTF-8''%s" % (disp, quote(a["name"], safe="")))
+            self.end_headers()
+            while True:
+                chunk = f.read(65536)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
 
     def send_text(self, status, text, ctype):
         body = text.encode()
@@ -2332,6 +2647,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if method == "POST" and path == "/api/sync":
             return self.send_json(200, app.sync(u, self.read_body(MAX_BODY_SYNC)))
+        if method == "POST" and path == "/api/files":
+            return self.send_json(200, app.file_upload(u, self, urlparse(self.path).query))
+        m = ROUTE_FILE.match(path)
+        if m and method == "GET":
+            return self.send_file(app.file_get(u, m.group(1)))
         body = self.read_body(MAX_BODY) if method in ("POST", "DELETE") else {}
 
         if method == "POST" and path == "/api/auth/logout":
@@ -2392,6 +2712,16 @@ class Handler(BaseHTTPRequestHandler):
                 except ValueError:
                     days = 7
                 return self.send_json(200, app.pomo_stats(u, days))
+        if method == "GET" and path == "/api/templates":
+            return self.send_json(200, app.templates(u))
+        if method == "POST" and path == "/api/templates":
+            return self.send_json(200, app.template_save(u, body))
+        m = ROUTE_FILE.match(path)
+        if m and method == "DELETE":
+            return self.send_json(200, app.file_delete(u, m.group(1)))
+        m = ROUTE_TEMPLATE.match(path)
+        if m and method == "DELETE":
+            return self.send_json(200, app.template_delete(u, m.group(1)))
         if path.startswith("/api/ical"):
             if method == "GET" and path == "/api/ical":
                 return self.send_json(200, app.ical_info(u))
@@ -2576,7 +2906,16 @@ def main():
     srv = make_server(store)
     if PUSH_AVAILABLE and env_flag("TB_NOTIFY"):
         threading.Thread(target=Notifier(Handler.app).run_forever, name="avisos", daemon=True).start()
-    elif not PUSH_AVAILABLE:
+
+    def maintenance():
+        while True:
+            time.sleep(3600)
+            try:
+                files_gc(store)
+            except Exception as e:  # pragma: no cover
+                print("Mantenimiento: error %s" % type(e).__name__, file=sys.stderr, flush=True)
+    threading.Thread(target=maintenance, name="mantenimiento", daemon=True).start()
+    if not PUSH_AVAILABLE:
         print("Avisos desactivados: falta python3-cryptography.", flush=True)
     print("Tackboard %s escuchando en %s:%d" % (VERSION, HOST, PORT), flush=True)
     try:

@@ -34,6 +34,8 @@ En memoria; nada se escribe en disco.
 | Enlaces de calendario nuevos | 10 por hora por usuario |
 | Descargas del calendario | 60 por hora por enlace |
 | Enlaces de calendario que no existen | 20 por hora por IP |
+| Adjuntos subidos | 120 por hora por usuario |
+| Plantillas guardadas | 60 por hora por usuario |
 
 Las claves caducan con su ventana (como mucho, una hora). Si hay demasiadas, se descartan las más antiguas.
 La IP real llega en `X-Real-IP` desde Caddy, que solo se fía de `X-Forwarded-For` si la petición viene de un
@@ -112,6 +114,19 @@ proxy de confianza (`tackboard-admin proxy`).
     petición.
   - El servidor no registra las rutas pedidas y Caddy no guarda registro de accesos, así que el enlace no queda escrito.
 
+## Adjuntos
+
+- Solo JPEG, PNG, WebP y PDF, comprobados por sus primeros bytes (no por la extensión ni por lo que diga el navegador).
+- Se sirven con `X-Content-Type-Options: nosniff` y `Content-Security-Policy: default-src 'none'; sandbox`; los PDF,
+  como descarga. Los pide la app con la sesión, así que un enlace a un adjunto no sirve sin ella.
+- Nombres en disco aleatorios (128 bits); el nombre original solo está en la base de datos y se codifica en
+  `Content-Disposition`. Al descargar, la extensión es siempre la del tipo real.
+- Cupos: 10 MB por archivo, 20 por tarjeta, 200 MB por tablero y un total por instalación. Se comprueban antes y
+  después de recibir el archivo, para que varias subidas a la vez no los salten.
+- El cuerpo se escribe a disco por trozos: un archivo grande no ocupa memoria del servidor.
+- Las fotos pierden el EXIF (ubicación, cámara) en el dispositivo, antes de subirlas.
+- Ver: miembro del tablero. Subir o borrar: permiso de escritura. Una tarjeta no puede referirse a adjuntos de otra.
+
 ## Servidor
 
 - **Escucha** solo en `127.0.0.1`, detrás de Caddy.
@@ -159,6 +174,18 @@ dos medios y cinco bajos, todos corregidos con prueba:
 - el límite por IP del calendario lo compartían todos los usuarios detrás de la misma IP;
 - el aviso del pomodoro no respetaba «Recibir avisos»;
 - dos dispositivos sin conexión podían duplicar la siguiente de una tarea que se repite.
+
+En la versión 1.3 una quinta revisión de adjuntos, plantillas, búsqueda y modo enfoque no encontró fallos críticos
+ni altos. Encontró uno medio y seis bajos, todos corregidos:
+
+- **Medio**: varias subidas a la vez podían saltarse los cupos de adjuntos. Ahora se comprueban de nuevo antes de guardar.
+- **Bajos**:
+  - el nombre y el tipo de un adjunto los podía cambiar el cliente;
+  - Caddy guardaba en memoria hasta 11 MB en cualquier petición, no solo en las subidas;
+  - un `$` en un título descolocaba los resultados de búsqueda;
+  - la limpieza de adjuntos no barría restos y se hacía con el candado puesto;
+  - la caché del navegador no distinguía sesiones;
+  - el bloqueo de pantalla del modo enfoque podía quedarse activo.
 
 ## Pendiente de ti si la publicas
 

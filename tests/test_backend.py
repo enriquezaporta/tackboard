@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 import urllib.error
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "backend"))
@@ -74,6 +75,7 @@ class BackendTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory()
+        server.FILES_DIR = os.path.join(cls.tmp.name, "files")
         cls.store = server.Store(os.path.join(cls.tmp.name, "t.db"))
         cls.srv = server.make_server(cls.store, "127.0.0.1", 0)
         cls.base = "http://127.0.0.1:%d" % cls.srv.server_address[1]
@@ -1165,6 +1167,177 @@ class BackendTest(unittest.TestCase):
         before = len(sent)
         n.pomo_tick(r["active"]["endsAt"] + 1000)
         self.assertEqual(len(sent), before)
+
+    # ---------------------------------------------------------------- 1.3: plantillas y adjuntos
+
+    def tpl(self, **kw):
+        t = {"name": "Proyecto", "color": "#2457A6", "labels": [{"id": "lbl0001", "name": "Error", "color": "#B4400B"}],
+             "columns": [{"name": "Por hacer"}, {"name": "En curso", "wip": 3}, {"name": "Hecho", "isDone": True}],
+             "cards": [{"col": 0, "title": "Primera", "labels": ["lbl0001"], "checklist": [{"text": "uno"}]}]}
+        t.update(kw)
+        return t
+
+    def test_templates(self):
+        a, b = self.user(), self.user()
+        st, r = a.post("/api/templates", self.tpl())
+        self.assertEqual(st, 200, r)
+        t = r["templates"][0]
+        self.assertEqual([c["name"] for c in t["columns"]], ["Por hacer", "En curso", "Hecho"])
+        self.assertEqual(t["cards"][0]["checklist"], [{"text": "uno"}])
+        # Solo las ve su dueño, y solo él las borra.
+        self.assertEqual(b.get("/api/templates")[1]["templates"], [])
+        self.assertEqual(len(b.delete("/api/templates/" + t["id"])[1]["templates"]), 0)
+        self.assertEqual(len(a.get("/api/templates")[1]["templates"]), 1)
+        for bad in (self.tpl(columns=[]), self.tpl(cards=[{"col": 9, "title": "x"}]), self.tpl(cards=[{"col": 0, "title": "x", "labels": ["otra000"]}]),
+                    self.tpl(name=""), self.tpl(columns=[{"name": "x"}] * 51), self.tpl(color="red")):
+            self.assertEqual(a.post("/api/templates", bad)[0], 400, bad)
+        # Fechas o campos desconocidos se descartan.
+        st, r = a.post("/api/templates", self.tpl(cards=[{"col": 0, "title": "x", "due": "2030-01-01", "secret": 1}]))
+        self.assertEqual(set(r["templates"][-1]["cards"][0]), {"col", "title", "description", "priority", "labels", "checklist"})
+        self.assertEqual(len(a.get("/api/export")[1]["templates"]), 2)
+        a.delete("/api/templates/" + t["id"])
+        self.assertEqual(len(a.get("/api/templates")[1]["templates"]), 1)
+
+    JPEG = b"\xff\xd8\xff\xe0" + b"0" * 2000
+    PDF = b"%PDF-1.7\n" + b"0" * 1000
+
+    def up(self, c, card_id, data, mime="image/jpeg", name="foto.jpg"):
+        return c.req("POST", "/api/files?card=%s&name=%s" % (card_id, urllib.parse.quote(name)), None,
+                     {"Content-Type": mime}) if data is None else self._raw(c, "/api/files?card=%s&name=%s" % (card_id, urllib.parse.quote(name)), data, mime)
+
+    def _raw(self, c, path, data, mime):
+        h = {"X-Real-IP": "10.0.0.%d" % (id(c) % 250), "Authorization": "Bearer " + c.token, "Content-Type": mime}
+        r = urllib.request.Request(self.base + path, data=data, method="POST", headers=h)
+        try:
+            with urllib.request.urlopen(r) as res:
+                return res.status, json.loads(res.read())
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except Exception:
+                return e.code, None
+
+    def fetch_file(self, c, fid):
+        r = urllib.request.Request(self.base + "/api/files/" + fid, headers={"X-Real-IP": "10.0.0.%d" % (id(c) % 250), "Authorization": "Bearer " + c.token})
+        try:
+            with urllib.request.urlopen(r) as res:
+                return res.status, res.headers, res.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers, b""
+
+    def test_attachments(self):
+        a, b, outsider = self.user(), self.user(), self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        c = card(server.b64u(os.urandom(16)), bid, col, "Con foto")
+        self.sync(a, [c])
+        self.share(a, b, bid, "read")
+        st, r = self.up(a, c["id"], self.JPEG)
+        self.assertEqual(st, 200, r)
+        fid = r["id"]
+        st, h, body = self.fetch_file(a, fid)
+        self.assertEqual((st, body), (200, self.JPEG))
+        self.assertEqual(h["Content-Type"], "image/jpeg")
+        self.assertIn("sandbox", h["Content-Security-Policy"])
+        self.assertEqual(self.fetch_file(b, fid)[0], 200)            # lectura: puede ver
+        self.assertEqual(self.fetch_file(outsider, fid)[0], 404)     # ajeno: no existe
+        self.assertEqual(self.up(b, c["id"], self.JPEG)[0], 403)     # lectura: no puede subir
+        self.assertEqual(self.up(outsider, c["id"], self.JPEG)[0], 403)
+        # Tipo real comprobado, tamaño máximo y tipos admitidos.
+        self.assertEqual(self.up(a, c["id"], b"<html><script>", "image/jpeg")[0], 415)
+        self.assertEqual(self.up(a, c["id"], b"GIF89a....", "image/gif")[0], 400)
+        self.assertEqual(self.up(a, c["id"], self.PDF, "application/pdf", "factura.pdf")[0], 200)
+        old = server.MAX_FILE
+        server.MAX_FILE = 1000
+        try:
+            self.assertEqual(self.up(a, c["id"], self.JPEG)[0], 413)
+        finally:
+            server.MAX_FILE = old
+        # La tarjeta solo puede referirse a sus propios adjuntos.
+        c2 = card(server.b64u(os.urandom(16)), bid, col, "Otra")
+        att = {"id": fid, "name": "foto.jpg", "mime": "image/jpeg", "size": len(self.JPEG)}
+        self.sync(a, [dict(c, updatedAt=now_ms() + 5, data=dict(c["data"], attachments=[att])),
+                      dict(c2, data=dict(c2["data"], attachments=[att]))])
+        got = {x["id"]: x["data"]["attachments"] for x in self.sync(a)["changes"] if x["kind"] == "card"}
+        self.assertEqual([x["id"] for x in got[c["id"]]], [fid])
+        self.assertEqual(got[c2["id"]], [])
+        # Limpieza: el PDF no lo usa la tarjeta → se borra pasado un día; la foto, no.
+        with self.store.lock:
+            server.files_gc(self.store, server.now() + 2 * 86400)
+            left = [r["id"] for r in self.store.q("SELECT id FROM attachments WHERE card_id=?", (c["id"],))]
+        self.assertEqual(left, [fid])
+        self.assertTrue(os.path.exists(server.file_path(fid)))
+        # Borrar el adjunto: lectura no puede; escritura sí, y desaparece el archivo.
+        b.delete("/api/files/" + fid)
+        self.assertEqual(self.fetch_file(a, fid)[0], 200)
+        a.delete("/api/files/" + fid)
+        self.assertEqual(self.fetch_file(a, fid)[0], 404)
+        self.assertFalse(os.path.exists(server.file_path(fid)))
+        # Al borrar el tablero se borran sus archivos.
+        st, r = self.up(a, c["id"], self.JPEG)
+        fid2 = r["id"]
+        self.assertEqual(len(a.get("/api/export")[1]["attachments"]), 1)
+        self.sync(a, [{"id": bid, "kind": "board", "boardId": bid, "updatedAt": now_ms() + 50, "deleted": True}])
+        self.assertFalse(os.path.exists(server.file_path(fid2)))
+
+    def test_attachment_limits(self):
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        c = card(server.b64u(os.urandom(16)), bid, col, "Muchas")
+        self.sync(a, [c])
+        old = server.MAX_BOARD_FILES
+        server.MAX_BOARD_FILES = 5000
+        try:
+            self.assertEqual(self.up(a, c["id"], self.JPEG)[0], 200)
+            self.assertEqual(self.up(a, c["id"], self.JPEG)[0], 200)
+            self.assertEqual(self.up(a, c["id"], self.JPEG)[0], 400)   # pasa del cupo del tablero
+        finally:
+            server.MAX_BOARD_FILES = old
+        self.assertEqual(self.up(a, "noexiste123", self.JPEG)[0], 403)
+        self.assertEqual(self.up(a, "../../etc", self.JPEG)[0], 400)
+
+    def test_attachment_review_fixes(self):
+        import socket
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        c = card(server.b64u(os.urandom(16)), bid, col, "Cupo")
+        self.sync(a, [c])
+        old = server.MAX_CARD_FILES
+        server.MAX_CARD_FILES = 1
+        try:
+            # Una subida a medias pasa la primera comprobación; otra completa llena el cupo; la primera, al
+            # terminar, ya no cabe.
+            host, port = self.srv.server_address
+            sk = socket.create_connection((host, port))
+            body = self.JPEG
+            head = ("POST /api/files?card=%s&name=a.jpg HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer %s\r\n"
+                    "Content-Type: image/jpeg\r\nContent-Length: %d\r\nX-Real-IP: 10.0.0.9\r\n\r\n" % (c["id"], a.token, len(body)))
+            sk.sendall(head.encode() + body[:10])
+            time.sleep(0.3)
+            self.assertEqual(self.up(a, c["id"], self.JPEG)[0], 200)
+            sk.sendall(body[10:])
+            resp = sk.recv(4096).decode(errors="replace")
+            sk.close()
+            self.assertIn(" 400 ", resp.split("\r\n")[0])
+        finally:
+            server.MAX_CARD_FILES = old
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM attachments WHERE card_id=?", (c["id"],))[0], 1)
+            fid = self.store.one("SELECT id FROM attachments WHERE card_id=?", (c["id"],))["id"]
+        # El nombre y el tipo los pone el servidor.
+        att = {"id": fid, "name": "factura.html", "mime": "application/pdf", "size": 1}
+        self.sync(a, [dict(c, updatedAt=now_ms() + 5, data=dict(c["data"], attachments=[att]))])
+        got = [x for x in self.sync(a)["changes"] if x["id"] == c["id"]][0]["data"]["attachments"][0]
+        self.assertEqual((got["name"], got["mime"], got["size"]), ("foto.jpg", "image/jpeg", len(self.JPEG)))
+        # La limpieza barre restos de subidas cortadas y archivos sin fila.
+        d = os.path.join(server.FILES_DIR, "zz")
+        os.makedirs(d, exist_ok=True)
+        for f in ("zzhuerfano", "zzcortado.part"):
+            open(os.path.join(d, f), "wb").write(b"x")
+            os.utime(os.path.join(d, f), (time.time() - 3 * 86400,) * 2)
+        server.files_gc(self.store)
+        self.assertEqual(os.listdir(d), [])
+        self.assertTrue(os.path.exists(server.file_path(fid)))
 
     def test_unread_body_closes_connection(self):
         """Un cuerpo no leído no debe interpretarse como la siguiente petición (respuestas cruzadas)."""

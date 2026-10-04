@@ -23,7 +23,7 @@ Todo lo que hay en un tablero es un **registro** con la misma forma:
 |---|---|
 | `board` | `name`, `color`, `labels[]` (id, nombre, color), `pos` |
 | `column` | `name`, `pos`, `wip` (límite o `null`), `isDone` |
-| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `alertBase`, `reminders[]`, `repeat`, `repeatedAs`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
+| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `alertBase`, `reminders[]`, `repeat`, `repeatedAs`, `attachments[]`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
 
 - **Orden**: las columnas y las tarjetas se ordenan por `pos`, un número decimal. Insertar entre dos tarjetas usa el
   punto medio; si se agota el hueco, se renumera la columna.
@@ -44,6 +44,8 @@ Tablas de SQLite:
 | `push_subs`, `notify_prefs`, `notify_log`, `settings` | Avisos (ver más abajo) |
 | `pomo_active`, `pomo_log` | Pomodoro en marcha de cada persona y pomodoros completados |
 | `ical_tokens` | Enlace de calendario de cada persona: sha256 del enlace, tableros excluidos, última consulta |
+| `attachments` | Adjuntos: tablero, tarjeta, quién lo subió, nombre, tipo y tamaño. El archivo está en `files/<2 letras>/<id>` |
+| `templates` | Plantillas de tablero de cada persona |
 
 ## Sincronización
 
@@ -148,6 +150,28 @@ El cliente sincroniza:
   como un evento de 15 minutos a esa hora. Sin alarmas, para no duplicar los avisos de la app.
 - Texto escapado y líneas de 75 octetos como pide el RFC 5545. Como mucho 5.000 eventos.
 
+## Adjuntos
+
+- La app reduce las fotos (2048 px, JPEG) antes de subirlas: pesan menos y pierden el EXIF. Los PDF van tal cual.
+- `POST /api/files?card=<id>&name=<nombre>` con el archivo como cuerpo y su tipo en `Content-Type`. El servidor:
+  - comprueba permiso de escritura en el tablero de la tarjeta y los cupos (10 MB por archivo, 20 por tarjeta, 200 MB
+    por tablero y `TB_FILES_MAX_MB` en total);
+  - escribe el cuerpo a disco por trozos y comprueba el tipo real por sus primeros bytes (JPEG, PNG, WebP o PDF);
+  - vuelve a comprobar permisos y cupos antes de darlo por bueno (por si hay varias subidas a la vez).
+- La tarjeta guarda la lista (`attachments[]`) y se sincroniza como siempre. El servidor solo deja en esa lista
+  adjuntos subidos a esa misma tarjeta, y con el nombre, tipo y tamaño que tiene él.
+- `GET /api/files/<id>` exige ser miembro del tablero. Se sirve con `nosniff`, `Content-Security-Policy: sandbox` y,
+  los PDF, como descarga. La app los pide con la sesión y los muestra como `blob:`.
+- Limpieza: al borrar un tablero se borran sus archivos. Cada hora se borran los adjuntos que ninguna tarjeta usa desde
+  hace más de un día, los restos de subidas cortadas y los archivos sin fila.
+
+## Plantillas
+
+Las incluidas están en `app/js/templates.js`. Las propias se guardan en el servidor (`/api/templates`): nombre, color,
+etiquetas, columnas y, si se quiere, tarjetas (título, descripción, prioridad, etiquetas y checklist, sin fechas).
+Como mucho 30 por persona y 256 KB cada una. Crear un tablero desde una plantilla son registros normales creados por
+el cliente, con identificadores nuevos.
+
 ## Permisos
 
 Se comprueban **siempre en el servidor**, registro a registro. La interfaz solo oculta lo que no se puede hacer.
@@ -183,6 +207,8 @@ Además:
 | `GET`/`POST /api/push/prefs` | Preferencias de avisos |
 | `GET /api/pomo`, `POST /api/pomo/start`, `/stop`, `/log`, `GET /api/pomo/stats` | Pomodoro |
 | `GET /api/ical`, `POST /api/ical/new`, `/revoke`, `/prefs` | Enlace de calendario |
+| `POST /api/files`, `GET`/`DELETE /api/files/<id>` | Adjuntos |
+| `GET`/`POST /api/templates`, `DELETE /api/templates/<id>` | Plantillas propias |
 | `GET /api/ical/<token>.ics` | El calendario (sin sesión: el enlace es la credencial) |
 
 Todo salvo `health`, `legal`, `register`, `login`, `recover` y el `.ics` necesita `Authorization: Bearer <token>`.
@@ -191,8 +217,10 @@ Todo salvo `health`, `legal`, `register`, `login`, `recover` y el `.ics` necesit
 
 | Archivo | Qué hace |
 |---|---|
-| `app/js/main.js` | Arranque, rutas (`#/hoy`, `#/tableros`, `#/tablero/<id>`, `#/calendario`, `#/pomodoro`, `#/ajustes`, `#/tarjeta/<id>`) y estructura |
+| `app/js/main.js` | Arranque, rutas (`#/hoy`, `#/tableros`, `#/tablero/<id>`, `#/calendario`, `#/pomodoro`, `#/buscar`, `#/ajustes`, `#/tarjeta/<id>`) y estructura |
 | `app/js/pomo.js` | Estado del pomodoro, sincronizado con el servidor |
+| `app/js/files.js` | Adjuntos: preparar fotos, subir, mostrar y visor |
+| `app/js/templates.js` | Plantillas incluidas y propias |
 | `app/js/push.js` | Suscripción a los avisos del dispositivo |
 | `app/js/store.js` | Estado en memoria, cambios locales y sincronización |
 | `app/js/db.js` | IndexedDB |

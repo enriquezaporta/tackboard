@@ -2,6 +2,8 @@
 import * as S from './store.js';
 import { get, post, del, errorText } from './api.js';
 import { openSheet, confirmDialog, closeSheet } from './ui.js';
+import * as T from './templates.js';
+import * as F from './files.js';
 import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS, REPEAT_FREQ, REPEAT_UNIT, DOW_ORDER, DOW_LETTER, nextDue, repeatLabel, dueLabel } from './util.js';
 
 const PRIOS = [['', 'Sin prioridad'], ['low', 'Baja'], ['medium', 'Media'], ['high', 'Alta']];
@@ -163,6 +165,9 @@ function renderCard(el, card, sheet) {
       <input id="c-ck-text" class="input grow" maxlength="300" placeholder="Añadir elemento" autocomplete="off">
       <button type="submit" class="btn">Añadir</button></form>`}
 
+    <div class="row att-head"><strong class="grow">Adjuntos</strong>${(d.attachments || []).length ? `<span class="mono small muted">${d.attachments.length}</span>` : ''}</div>
+    ${F.attachmentsHtml(card, !ro)}
+
     ${!d.done && !d.archived ? `<button type="button" class="btn block" id="c-pomo">${icon('timer', 's')} Empezar un pomodoro con esta tarea</button>` : ''}
     ${ro ? '' : `<div class="row sheet-actions">
       <button type="button" class="btn grow" id="c-archive">${icon('archive', 's')} ${d.archived ? 'Restaurar' : 'Archivar'}</button>
@@ -172,6 +177,14 @@ function renderCard(el, card, sheet) {
   const title = el.querySelector('#c-title');
   const autosize = () => { title.style.height = 'auto'; title.style.height = `${title.scrollHeight}px`; };
   autosize();
+  F.fillThumbs(el);
+  el.querySelectorAll('[data-att-open]').forEach((b) => b.addEventListener('click', () => F.openAttachment(card.id, b.dataset.attOpen)));
+  el.querySelector('#att-input')?.addEventListener('change', async (e) => {
+    const files = e.target.files;
+    if (!files?.length) return;
+    await F.addFiles(card.id, files);
+    if (document.body.contains(sheet.el)) sheet.refresh();
+  });
   el.querySelector('#c-pomo')?.addEventListener('click', async () => {
     const m = await import('./views/pomodoro.js');
     try {
@@ -322,23 +335,76 @@ export function openNewTask({ due = '', boardId = null } = {}) {
 
 export function openNewBoard(onCreated) {
   let color = COLORS[S.boards().length % COLORS.length];
+  let colorTouched = false;
+  let name = '';
+  let tplId = 'basic';
+  const built = T.builtins();
+  const all = () => [...built.map((t) => ({ ...t, own: false })), ...T.cachedMine().map((t) => ({ ...t, own: true, desc: `${plural(t.columns.length, 'columna', 'columnas')}${t.cards.length ? ` · ${plural(t.cards.length, 'tarjeta', 'tarjetas')}` : ''}` }))];
   const s = openSheet({
     title: 'Nuevo tablero',
     render(el) {
+      const list = all();
+      if (!list.find((t) => t.id === tplId)) tplId = 'basic';
+      const tplRow = (t) => `<label class="tpl ${t.id === tplId ? 'on' : ''}"><input type="radio" name="tpl" value="${esc(t.id)}" ${t.id === tplId ? 'checked' : ''}>
+        <span class="sq" data-c="${esc(t.color)}"></span><span class="grow"><strong>${esc(t.name)}</strong><br><span class="hint">${esc(t.desc || '')}</span>
+        <span class="tpl-cols">${t.columns.map((c) => esc(c.name)).join(' → ')}</span></span>
+        ${t.own ? `<button type="button" class="icon-btn plain" data-tpl-del="${esc(t.id)}" aria-label="Borrar la plantilla «${esc(t.name)}»">${icon('trash', 's')}</button>` : ''}</label>`;
+      const mine = list.filter((t) => t.own);
       el.innerHTML = `<form id="nb">
-        <div class="field"><label for="nb-name">Nombre</label><input id="nb-name" class="input" maxlength="80" required autofocus placeholder="Casa, Trabajo, Homelab…"></div>
+        <div class="field"><label for="nb-name">Nombre</label><input id="nb-name" class="input" maxlength="80" required autofocus placeholder="Casa, Trabajo, Homelab…" value="${esc(name)}"></div>
         <div class="field"><span class="label">Color</span>${colorPicker('nb', color)}</div>
-        <p class="hint">Empieza con las columnas Por hacer, En curso (límite de 3) y Hecho. Puedes cambiarlas después.</p>
+        <div class="field"><span class="label">Plantilla</span>
+          <div class="tpl-list" role="radiogroup" aria-label="Plantilla">${list.filter((t) => !t.own).map(tplRow).join('')}</div>
+          ${mine.length ? `<span class="label tpl-sub">Tus plantillas</span><div class="tpl-list">${mine.map(tplRow).join('')}</div>` : ''}
+          <p class="hint">Todo se puede cambiar después. Para crear tus plantillas: menú de un tablero → <em>Guardar como plantilla</em>.</p></div>
         <button type="submit" class="btn primary block">Crear tablero</button></form>`;
-      bindColorPicker(el, 'nb', (c) => { color = c; });
+      bindColorPicker(el, 'nb', (c) => { color = c; colorTouched = true; });
+      el.querySelector('#nb-name').addEventListener('input', (e) => { name = e.target.value; });
+      el.querySelectorAll('input[name=tpl]').forEach((r) => r.addEventListener('change', () => {
+        tplId = r.value;
+        const t = all().find((x) => x.id === tplId);
+        if (t && !colorTouched) color = safeColor(t.color);
+        s.refresh();
+      }));
+      el.querySelectorAll('[data-tpl-del]').forEach((b) => b.addEventListener('click', async (e) => {
+        e.preventDefault();
+        try { await T.deleteMine(b.dataset.tplDel); toast('Plantilla borrada'); s.refresh(); } catch (err) { toast(errorText(err)); }
+      }));
       el.querySelector('#nb').addEventListener('submit', async (e) => {
         e.preventDefault();
-        const name = el.querySelector('#nb-name').value.trim();
-        if (!name) return;
-        const id = await S.createBoard(name, color);
+        const nm = el.querySelector('#nb-name').value.trim();
+        if (!nm) return;
+        const t = all().find((x) => x.id === tplId) || built[0];
+        const id = await T.createFromTemplate(t, nm, color);
         await S.saveSettings({ lastBoard: id });
         s.close();
         if (onCreated) onCreated(id); else location.hash = `#/tablero/${id}`;
+      });
+    },
+  });
+  T.loadMine().then(() => { if (document.body.contains(s.el)) s.refresh(); });
+}
+
+function openSaveTemplate(boardId) {
+  const b = S.board(boardId);
+  const s = openSheet({
+    title: 'Guardar como plantilla',
+    render(el) {
+      el.innerHTML = `<form id="st">
+        <div class="field"><label for="st-name">Nombre de la plantilla</label><input id="st-name" class="input" maxlength="60" required value="${esc(b.data.name)}"></div>
+        <label class="list-row plain-row"><span class="grow">Incluir las tarjetas pendientes<br><span class="hint">Título, descripción, etiquetas y checklist; sin fechas.</span></span>
+          <span class="switch"><input id="st-cards" type="checkbox"><span></span></span></label>
+        <p class="hint">Se guardan las columnas, sus límites y las etiquetas. La plantilla es solo tuya y está en todos tus dispositivos.</p>
+        <button type="submit" class="btn primary block">Guardar plantilla</button></form>`;
+      el.querySelector('#st').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const nm = el.querySelector('#st-name').value.trim();
+        if (!nm) return;
+        try {
+          await T.saveMine(T.boardToTemplate(boardId, nm, el.querySelector('#st-cards').checked));
+          s.close();
+          toast('Plantilla guardada. La verás al crear un tablero.');
+        } catch (err) { toast(errorText(err)); }
       });
     },
   });
@@ -360,6 +426,7 @@ export function openBoardMenu(boardId) {
           <button type="button" class="list-row" data-go="labels">${icon('filter')}<span class="grow">Etiquetas</span>${icon('right', 's')}</button>` : ''}
           <button type="button" class="list-row" data-go="share">${icon('users')}<span class="grow">Miembros y permisos</span>${icon('right', 's')}</button>
           <button type="button" class="list-row" data-go="archived">${icon('archive')}<span class="grow">Tarjetas archivadas</span><span class="muted">${archived}</span></button>
+          <button type="button" class="list-row" data-go="template">${icon('board')}<span class="grow">Guardar como plantilla</span>${icon('right', 's')}</button>
         </div>
         <div class="section-title danger">Zona delicada</div>
         ${role === 'owner'
@@ -372,6 +439,7 @@ export function openBoardMenu(boardId) {
         if (go === 'labels') openLabels(boardId);
         if (go === 'share') openShare(boardId);
         if (go === 'archived') openArchived(boardId);
+        if (go === 'template') openSaveTemplate(boardId);
         if (go === 'delete') deleteBoard(boardId);
         if (go === 'leave') leaveBoard(boardId);
       }));
