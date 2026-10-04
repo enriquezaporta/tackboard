@@ -1,7 +1,7 @@
 // Estado de la app en memoria, guardado local y sincronización con el servidor.
 import * as db from './db.js';
 import { api, get, post, setToken, ApiError } from './api.js';
-import { uid, dueAt, alertBase, todayStr } from './util.js';
+import { uid, dueAt, alertBase, todayStr, nextDue, addDays, parseDate, dueLabel, toast } from './util.js';
 
 const listeners = new Set();
 export const state = {
@@ -80,26 +80,70 @@ function normalize(kind, data) {
 }
 
 export async function save(kind, id, boardId, rawData) {
-  const data = normalize(kind, rawData);
-  const prev = state.records.get(id);
-  const r = { id, kind, boardId, data, updatedAt: stamp(prev), deleted: false, serverTs: prev?.serverTs || 0 };
-  state.records.set(id, r);
-  await db.putRecords([r], { outbox: true });
-  afterLocalChange();
-  return r;
+  return (await saveMany([{ kind, id, boardId, data: rawData }]))[0];
 }
 
 export async function saveMany(list) {
-  const out = list.map(({ kind, id, boardId, data: rawData }) => {
+  const extra = [];
+  const drop = [];
+  const notes = [];
+  const items = list.map((it) => it.kind === 'card' ? repeatHook(it, extra, drop, notes) : it);
+  const out = [...items, ...extra].map(({ kind, id, boardId, data: rawData }) => {
     const data = normalize(kind, rawData);
     const prev = state.records.get(id);
     const r = { id, kind, boardId, data, updatedAt: stamp(prev), deleted: false, serverTs: prev?.serverTs || 0 };
     state.records.set(id, r);
     return r;
   });
+  // La tarjeta original recuerda cuándo se creó la siguiente, para poder deshacerlo si se reabre sin haberla tocado.
+  for (const r of out) {
+    const ra = r.data?.repeatedAs;
+    if (ra && ra.at === 0) {
+      const nx = out.find((x) => x.id === ra.id);
+      if (nx) r.data = { ...r.data, repeatedAs: { id: ra.id, at: nx.updatedAt } };
+    }
+  }
   await db.putRecords(out, { outbox: true });
-  afterLocalChange();
-  return out;
+  if (drop.length) await remove(drop); else afterLocalChange();
+  for (const n of notes) toast(n);
+  return out.slice(0, list.length);
+}
+
+/**
+ * Tareas que se repiten. Al completarse, se crea la siguiente (con la próxima fecha) y la completada deja de
+ * repetirse. Si se reabre antes de tocar la siguiente, la siguiente se quita y vuelve a repetirse.
+ */
+function repeatHook(it, extra, drop, notes) {
+  const prev = record(it.id);
+  const d = it.data;
+  const wasDone = !!prev?.data.done;
+  if (d.done && !wasDone && d.repeat?.freq && d.due) {
+    const next = nextDue(d.due, d.repeat);
+    // Identificador fijo para cada vez (tarjeta original + fecha): si dos dispositivos la completan sin conexión,
+    // crean la misma tarjeta y no dos.
+    const id = `${it.id.slice(0, 22)}_r${next.replace(/-/g, '')}`;
+    const shift = Math.round((parseDate(next) - parseDate(d.due)) / 86400000);
+    const cols = columns(it.boardId);
+    const col = cols.find((c) => !c.data.isDone) || cols.find((c) => c.id === d.columnId);
+    if (!col) return it;
+    extra.push({ kind: 'card', id, boardId: it.boardId, data: {
+      ...d, columnId: col.id, pos: posAt(columnCards(col.id), 0), due: next,
+      start: d.start ? addDays(d.start, shift) : '', done: false, doneAt: null, archived: false,
+      checklist: (d.checklist || []).map((x) => ({ ...x, done: false })), repeatedAs: null,
+    } });
+    const when = dueLabel(next, d.dueTime).toLowerCase();
+    notes.push(`Se repite: la siguiente vence ${/^(hoy|mañana)/.test(when) ? when : `el ${when}`}.`);
+    return { ...it, data: { ...d, repeat: null, repeatedAs: { id, at: 0 } } };
+  }
+  if (!d.done && wasDone && d.repeatedAs?.id) {
+    const nx = record(d.repeatedAs.id);
+    if (nx && nx.kind === 'card' && nx.boardId === it.boardId && nx.updatedAt === d.repeatedAs.at && !nx.data.done) {
+      drop.push(nx.id);
+      return { ...it, data: { ...d, repeat: nx.data.repeat, repeatedAs: null } };
+    }
+    return { ...it, data: { ...d, repeatedAs: null } };
+  }
+  return it;
 }
 
 export async function remove(ids) {

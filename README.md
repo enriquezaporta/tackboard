@@ -23,6 +23,9 @@ instalable (PWA) que funciona sin conexión y se aloja en tu propio servidor: tu
 - **Sin conexión**: todo se guarda en el dispositivo y se sincroniza al volver.
 - **Móvil y escritorio**, tema claro y oscuro.
 - **Avisos** antes de que venza una tarea (notificaciones push, también en iPhone), con horario de silencio y resumen diario.
+- **Tareas que se repiten**: cada día, días laborables, ciertos días de la semana, cada mes, cada año o cada N.
+- **Pomodoro** ligado a las tarjetas, con aviso al terminar aunque la app esté cerrada y estadísticas.
+- **Calendario del móvil**: un enlace secreto (iCal) para ver tus tareas en el calendario del iPhone, Android u Outlook.
 - **Privacidad**: sin correo, sin rastreadores, sin servicios de terceros. Cada uno puede descargar sus datos o borrar su cuenta.
 
 ## Probarlo en un minuto
@@ -42,7 +45,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 | | |
 |---|---|
-| [Uso](docs/uso.md) | Tableros, tarjetas, calendario, compartir y ajustes |
+| [Uso](docs/uso.md) | Tableros, tarjetas, repetición, calendario, pomodoro, avisos, compartir y ajustes |
 | [Instalación](docs/instalacion.md) | Debian/Proxmox (LXC), Docker, HTTPS, cortafuegos, copias y actualizaciones |
 | [Arquitectura](docs/arquitectura.md) | Cómo funciona por dentro: datos, sincronización y permisos |
 | [Seguridad](docs/seguridad.md) | Medidas aplicadas y cómo avisar de un fallo |
@@ -57,7 +60,7 @@ mira [docs/instalacion.md](docs/instalacion.md).
 
 ## Hoja de ruta
 
-- **1.2**: temporizador pomodoro con estadísticas, tareas que se repiten y enlace de calendario (iCal).
+Ideas para más adelante: plantillas de tablero, adjuntos, búsqueda global y modo de enfoque con el pomodoro.
 
 ## Licencia
 

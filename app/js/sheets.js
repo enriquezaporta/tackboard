@@ -2,7 +2,7 @@
 import * as S from './store.js';
 import { get, post, del, errorText } from './api.js';
 import { openSheet, confirmDialog, closeSheet } from './ui.js';
-import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS } from './util.js';
+import { esc, icon, uid, shortId, COLORS, COLOR_NAMES, dueAt, todayStr, toast, plural, safeColor, REMINDERS, REPEAT_FREQ, REPEAT_UNIT, DOW_ORDER, DOW_LETTER, nextDue, repeatLabel, dueLabel } from './util.js';
 
 const PRIOS = [['', 'Sin prioridad'], ['low', 'Baja'], ['medium', 'Media'], ['high', 'Alta']];
 export const PRIO_NAME = { low: 'Baja', medium: 'Media', high: 'Alta' };
@@ -54,6 +54,51 @@ export function openCard(cardId) {
   sheet.el.addEventListener('focusout', () => setTimeout(() => { if (stale) refresh(); }, 0));
 }
 
+function repeatHtml(d, dis) {
+  if (!d.due) return '<span class="muted small">Pon una fecha para poder repetirla.</span>';
+  const rp = d.repeat || {};
+  const f = rp.freq || '';
+  let h = `<select id="c-rep" class="select" aria-label="Repetir" ${dis}>${REPEAT_FREQ.map(([k, n]) =>
+    `<option value="${k}" ${k === f ? 'selected' : ''}>${n}</option>`).join('')}</select>`;
+  if (f && f !== 'weekday') {
+    const n = rp.every || 1;
+    h += `<label class="rep-every">cada <input id="c-rep-n" class="input" type="number" min="1" max="99" inputmode="numeric" value="${n}" ${dis}>
+      ${REPEAT_UNIT[f][n === 1 ? 0 : 1]}</label>`;
+  }
+  if (f === 'week') {
+    const days = (rp.days || []).length ? rp.days : [new Date(`${d.due}T12:00`).getDay()];
+    h += `<span class="chips">${DOW_ORDER.map((x) => `<button type="button" class="chip day-chip" data-rep-day="${x}"
+      aria-pressed="${days.includes(x)}" aria-label="${['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'][x]}" ${dis}>${DOW_LETTER[x]}</button>`).join('')}</span>`;
+  }
+  if (f) {
+    const nx = nextDue(d.due, rp);
+    h += `<span class="hint">${esc(repeatLabel(rp))}. Al completarla se crea la siguiente (${esc(dueLabel(nx, d.dueTime).toLowerCase())}).</span>`;
+  }
+  return h;
+}
+
+function bindRepeat(el, cardId, patch, sheet) {
+  const cur = () => S.record(cardId)?.data;
+  el.querySelector('#c-rep')?.addEventListener('change', (e) => {
+    const d = cur();
+    const f = e.target.value;
+    const rp = f ? { freq: f, every: d.repeat?.freq === f ? d.repeat.every : 1, days: f === 'week' ? [new Date(`${d.due}T12:00`).getDay()] : [], day: +d.due.slice(8, 10) } : null;
+    patch({ repeat: rp })?.then(() => sheet.refresh());
+  });
+  el.querySelector('#c-rep-n')?.addEventListener('change', (e) => {
+    const n = Math.max(1, Math.min(99, parseInt(e.target.value, 10) || 1));
+    patch({ repeat: { ...cur().repeat, every: n } })?.then(() => sheet.refresh());
+  });
+  el.querySelectorAll('[data-rep-day]').forEach((b) => b.addEventListener('click', () => {
+    const rp = cur().repeat;
+    const x = +b.dataset.repDay;
+    const days = rp.days || [];
+    const nd = days.includes(x) ? days.filter((y) => y !== x) : [...days, x];
+    if (!nd.length) return toast('Elige al menos un día.');
+    patch({ repeat: { ...rp, days: nd.sort() } })?.then(() => sheet.refresh());
+  }));
+}
+
 function renderCard(el, card, sheet) {
   const d = card.data;
   const b = S.board(card.boardId);
@@ -90,6 +135,7 @@ function renderCard(el, card, sheet) {
           ${!d.dueTime ? '<span class="hint">Sin hora: se toma como referencia las 9:00 de ese día.</span>' : ''}
           ${S.state.notify.prefs && !S.state.notify.prefs.enabled ? '<span class="hint">Tienes los avisos desactivados en Ajustes.</span>' : ''}`
           : '<span class="muted small">Pon una fecha para poder avisarte.</span>'}</span></div>
+      <div class="prop"><span class="k">Repetir</span><span class="v">${repeatHtml(d, dis)}</span></div>
       <div class="prop"><span class="k">Inicio</span><span class="v">
         <input id="c-start" class="input" type="date" value="${esc(d.start)}" aria-label="Fecha de inicio" ${dis}></span></div>
       <div class="prop"><span class="k">Prioridad</span><span class="v">
@@ -117,6 +163,7 @@ function renderCard(el, card, sheet) {
       <input id="c-ck-text" class="input grow" maxlength="300" placeholder="Añadir elemento" autocomplete="off">
       <button type="submit" class="btn">Añadir</button></form>`}
 
+    ${!d.done && !d.archived ? `<button type="button" class="btn block" id="c-pomo">${icon('timer', 's')} Empezar un pomodoro con esta tarea</button>` : ''}
     ${ro ? '' : `<div class="row sheet-actions">
       <button type="button" class="btn grow" id="c-archive">${icon('archive', 's')} ${d.archived ? 'Restaurar' : 'Archivar'}</button>
       <button type="button" class="btn danger grow" id="c-delete">${icon('trash', 's')} Eliminar</button></div>`}
@@ -125,6 +172,12 @@ function renderCard(el, card, sheet) {
   const title = el.querySelector('#c-title');
   const autosize = () => { title.style.height = 'auto'; title.style.height = `${title.scrollHeight}px`; };
   autosize();
+  el.querySelector('#c-pomo')?.addEventListener('click', async () => {
+    const m = await import('./views/pomodoro.js');
+    try {
+      if (await m.startFromCard(card.id)) { closeSheet(); location.hash = '#/pomodoro'; } else openCard(card.id);
+    } catch (e) { toast(errorText(e)); }
+  });
   if (ro) return;
 
   const patch = (p) => {
@@ -151,11 +204,15 @@ function renderCard(el, card, sheet) {
     el.querySelector('#c-time').disabled = !e.target.value;
     el.querySelector('.time-field').hidden = !e.target.value;
     // Se repinta para mostrar u ocultar la fila de avisos (sin perder el foco).
-    patch({ due: e.target.value })?.then(() => sheet.refresh());
+    const p = { due: e.target.value };
+    const rp = S.record(card.id)?.data.repeat;
+    if (rp?.freq && e.target.value) p.repeat = { ...rp, day: +e.target.value.slice(8, 10) };
+    patch(p)?.then(() => sheet.refresh());
   });
+  bindRepeat(el, card.id, patch, sheet);
   bindTimeField(el.querySelector('#c-time'));
   el.querySelector('#c-time').addEventListener('change', (e) => patch({ dueTime: e.target.value })?.then(() => sheet.refresh()));
-  el.querySelector('#c-nodue')?.addEventListener('click', () => patch({ due: '', dueTime: '' })?.then(() => sheet.refresh()));
+  el.querySelector('#c-nodue')?.addEventListener('click', () => patch({ due: '', dueTime: '', repeat: null })?.then(() => sheet.refresh()));
   el.querySelector('#c-start').addEventListener('change', (e) => patch({ start: e.target.value }));
   el.querySelector('#c-prio').addEventListener('change', (e) => patch({ priority: e.target.value }));
   el.querySelector('#c-desc').addEventListener('change', (e) => patch({ description: e.target.value }));

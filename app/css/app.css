@@ -86,7 +86,7 @@ svg.i.s { width: 18px; height: 18px; }
   display: flex; justify-content: space-around;
 }
 .tab {
-  position: relative; min-width: 64px; min-height: 48px; border: 0; background: none; text-decoration: none;
+  position: relative; min-width: 56px; min-height: 48px; border: 0; background: none; text-decoration: none;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   font-size: 11px; color: var(--muted);
 }
@@ -535,3 +535,58 @@ body.is-dragging .columns { scroll-snap-type: none; }
 #push-box { margin-bottom: 12px; }
 .list-row.times { flex-wrap: wrap; gap: 8px 10px; }
 .list-row.times .time-input { flex: 1 1 110px; }
+
+/* Repetición */
+.rep-every { display: inline-flex; align-items: center; gap: 6px; font-size: 15px; }
+.rep-every .input { width: 64px; text-align: center; }
+.chip.day-chip { min-width: 38px; justify-content: center; padding-left: 0; padding-right: 0; }
+
+/* Pomodoro */
+.pomo-grid { display: grid; gap: 8px 32px; }
+.pomo-main { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 8px 0 12px; --ring: var(--accent); }
+.pomo-main.is-short, .pomo-main.is-long { --ring: var(--warn-text); }
+.pomo-ring { position: relative; width: min(78vw, 300px); aspect-ratio: 1; }
+.pomo-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.pomo-ring circle { fill: none; stroke-width: 6; }
+.pomo-ring .bg { stroke: var(--line); }
+.pomo-ring .fg { stroke: var(--ring); stroke-linecap: round; transition: stroke-dashoffset .9s linear; }
+.pomo-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 0 16%; }
+.pomo-phase { font-size: 14px; font-weight: 600; color: var(--muted); }
+.pomo-time { font-family: var(--mono); font-weight: 500; font-size: clamp(44px, 15vw, 64px); letter-spacing: -0.02em; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.pomo-sub { font-size: 12px; color: var(--muted); }
+.pomo-pick { width: 100%; max-width: 420px; margin: 0; }
+.pomo-actions { width: 100%; max-width: 420px; flex-wrap: wrap; }
+.pomo-actions .btn { min-width: 150px; flex: 1; }
+.pomo-actions .btn.primary { flex-basis: 100%; }
+.pomo-card { width: 100%; max-width: 420px; display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--surface); text-align: left; font-size: 15px; }
+.pomo-card .grow { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.list-row > .input.num-s { width: 76px; flex: none; text-align: center; min-height: 40px; padding: 6px 8px; }
+.stat-tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 12px 0; }
+.stat-tile { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.stat-tile .v { font-family: var(--mono); font-size: 20px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-tile .k { font-size: 12px; color: var(--muted); }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 140px; padding: 8px 0 0; border-bottom: 1px solid var(--line); }
+.bar { flex: 1; min-width: 0; height: 100%; border: 0; background: none; padding: 0; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 4px; cursor: pointer; }
+.bar i { display: block; width: min(100%, 28px); height: max(var(--p, 0%), 2px); background: var(--accent); border-radius: 4px 4px 0 0; max-height: calc(100% - 18px); }
+.bars.dense .bar i { width: 100%; border-radius: 2px 2px 0 0; }
+.bar i.zero { background: var(--line); }
+.bar.on i { background: var(--accent-text); }
+.bar span { font-size: 11px; color: var(--muted); height: 14px; line-height: 14px; }
+.bar-info { margin: 8px 0 4px; min-height: 18px; }
+.sub-title { margin: 18px 0 8px; font-size: 14px; font-weight: 600; }
+.stat-row .grow { display: flex; flex-direction: column; gap: 6px; }
+.stat-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meter { display: block; height: 4px; border-radius: 2px; background: var(--line-soft); overflow: hidden; }
+.meter i { display: block; height: 100%; width: var(--p, 0%); background: var(--c, var(--accent)); border-radius: 2px; }
+.stat-row .meter i { background: var(--accent); }
+.stat-min { min-width: 64px; text-align: right; }
+#pomo-pill { position: fixed; left: 16px; bottom: calc(var(--tabbar-h) + 14px); z-index: 25; display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px; border-radius: 999px; background: var(--dark); color: var(--dark-ink); text-decoration: none; font-size: 15px; box-shadow: var(--shadow); }
+#pomo-pill[hidden] { display: none; }
+#pomo-pill.is-short, #pomo-pill.is-long { background: var(--warn-soft); color: var(--warn-text); }
+@media (min-width: 1024px) {
+  #pomo-pill { left: auto; right: 32px; bottom: 100px; }
+  .pomo-grid { grid-template-columns: minmax(320px, 1fr) minmax(320px, 440px); align-items: start; }
+  .pomo-main { position: sticky; top: 24px; padding-top: 24px; }
+}

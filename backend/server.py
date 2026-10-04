@@ -68,10 +68,10 @@ try:
 except ImportError:  # pragma: no cover
     ZoneInfo = None
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
-VERSION = "1.1.3"
-POLICY_VERSION = "2026-10"
+VERSION = "1.2.0"
+POLICY_VERSION = "2026-10-04"
 
 DB_PATH = os.environ.get("TB_DB", "/var/lib/tackboard/tackboard.db")
 HOST = os.environ.get("TB_HOST", "127.0.0.1")
@@ -210,6 +210,35 @@ CREATE TABLE IF NOT EXISTS notify_log (
   UNIQUE (user_id, card_id, kind, fire_at)
 );
 CREATE INDEX IF NOT EXISTS notify_log_pending ON notify_log(state, deliver_at);
+-- Pomodoro en marcha (uno por persona) y pomodoros completados.
+CREATE TABLE IF NOT EXISTS pomo_active (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  phase TEXT NOT NULL,
+  card_id TEXT,
+  board_id TEXT,
+  started_at INTEGER NOT NULL,
+  ends_at INTEGER NOT NULL,
+  minutes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS pomo_active_end ON pomo_active(ends_at);
+CREATE TABLE IF NOT EXISTS pomo_log (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  card_id TEXT,
+  board_id TEXT,
+  started_at INTEGER NOT NULL,
+  minutes INTEGER NOT NULL,
+  UNIQUE (user_id, started_at)
+);
+-- Enlace de calendario (iCal) de cada persona. Solo se guarda el sha256 del enlace.
+CREATE TABLE IF NOT EXISTS ical_tokens (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at INTEGER NOT NULL,
+  excluded TEXT NOT NULL DEFAULT '[]',
+  last_fetch INTEGER
+);
 -- Ajustes internos (claves VAPID).
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -492,6 +521,9 @@ def clean_column(d):
     }
 
 
+REPEAT_FREQ = ("day", "weekday", "week", "month", "year")
+
+
 def clean_card(d):
     prio = d.get("priority") or ""
     if prio not in ("", "low", "medium", "high"):
@@ -532,6 +564,27 @@ def clean_card(d):
                 not all(isinstance(x, str) and x in REMINDERS for x in reminders):
             raise Invalid("reminders")
         reminders = [k for k in REMINDERS if k in reminders]  # orden fijo y sin repetidos
+    repeat = d.get("repeat")
+    if repeat is not None:
+        if not due:
+            repeat = None
+        else:
+            if not isinstance(repeat, dict) or repeat.get("freq") not in REPEAT_FREQ:
+                raise Invalid("repeat")
+            every = repeat.get("every", 1)
+            days = repeat.get("days") or []
+            day = repeat.get("day")
+            if type(every) is not int or not 1 <= every <= 99 or not isinstance(days, list) or len(days) > 7 \
+                    or not all(type(x) is int and 0 <= x <= 6 for x in days) \
+                    or (day is not None and (type(day) is not int or not 1 <= day <= 31)):
+                raise Invalid("repeat")
+            repeat = {"freq": repeat["freq"], "every": every, "days": sorted(set(days)), "day": day}
+    repeated_as = d.get("repeatedAs")
+    if repeated_as is not None:
+        if not isinstance(repeated_as, dict):
+            raise Invalid("repeatedAs")
+        repeated_as = {"id": v_ref(repeated_as.get("id"), "repeatedAs", allow_none=False),
+                       "at": v_int_or_none(repeated_as.get("at"), "repeatedAs", 0, 10 ** 14) or 0}
     return {
         "columnId": v_ref(d.get("columnId"), "columnId", allow_none=False),
         "title": v_str(d.get("title"), 200, "title", allow_empty=False),
@@ -550,6 +603,8 @@ def clean_card(d):
         "done": v_bool(d.get("done"), "done"),
         "doneAt": v_int_or_none(d.get("doneAt"), "doneAt", 0, 10 ** 14),
         "archived": v_bool(d.get("archived"), "archived"),
+        "repeat": repeat,
+        "repeatedAs": repeated_as,
     }
 
 
@@ -576,6 +631,11 @@ PUSH_HOSTS = re.compile(
     r"updates\.push\.services\.mozilla\.com|[a-z0-9.-]+\.notify\.windows\.com)$")
 MAX_SUBS_PER_USER = 10
 PUSH_TEST = RateLimiter(5, 60)
+POMO_USER = RateLimiter(120, 3600)      # inicios/paradas de pomodoro por persona
+ICAL_NEW = RateLimiter(10, 3600)        # enlaces nuevos por persona
+ICAL_TOKEN = RateLimiter(60, 3600)      # descargas por enlace
+ICAL_BAD_IP = RateLimiter(20, 3600)     # enlaces no válidos por IP
+LIMITERS = LIMITERS + (PUSH_TEST, POMO_USER, ICAL_NEW, ICAL_TOKEN, ICAL_BAD_IP)
 
 
 def b64u(data):
@@ -745,6 +805,7 @@ DEFAULT_PREFS = {
     "showTitles": False,             # mostrar el título de la tarea en el aviso
     "mutedBoards": [],               # tableros silenciados
     "tz": "UTC",
+    "pomoPush": True,                # aviso al terminar un pomodoro o un descanso
 }
 LATE_LIMIT_MS = 12 * 3600 * 1000     # un aviso que no se pudo entregar en 12 h ya no se envía
 REPEAT_GAP_MS = 30 * 60 * 1000       # el mismo recordatorio de la misma tarjeta, como mucho cada 30 min
@@ -797,6 +858,8 @@ def clean_prefs(body, prefs):
         out["enabled"] = body["enabled"] is True
     if "showTitles" in body:
         out["showTitles"] = body["showTitles"] is True
+    if "pomoPush" in body:
+        out["pomoPush"] = body["pomoPush"] is True
     if "defaultReminders" in body:
         r = body["defaultReminders"]
         if not isinstance(r, list) or not all(isinstance(x, str) and x in REMINDERS for x in r):
@@ -1113,13 +1176,71 @@ class Notifier:
                            opener=getattr(self.app, "push_opener", None))
         return sum(1 for _, st in res if 200 <= st < 300)
 
-    def run_forever(self, interval=30):
-        while True:
+    def pomo_tick(self, now_ms=None):
+        """Cierra los pomodoros y descansos que han terminado: guarda el pomodoro y avisa a la persona."""
+        now_ms = now_ms or now_ms_()
+        outbox = []
+        with self.s.lock:
+            ended = self.s.q("SELECT * FROM pomo_active WHERE ends_at<=? LIMIT 500", (now_ms,))
+            if not ended:
+                return 0
+            self.s.x("BEGIN IMMEDIATE")
             try:
-                self.tick()
+                for a in ended:
+                    uid = a["user_id"]
+                    self.s.x("DELETE FROM pomo_active WHERE user_id=? AND id=?", (uid, a["id"]))
+                    if a["phase"] == "focus":
+                        self.s.x("INSERT OR IGNORE INTO pomo_log(user_id,card_id,board_id,started_at,minutes) VALUES(?,?,?,?,?)",
+                                 (uid, a["card_id"], a["board_id"], a["started_at"], a["minutes"]))
+                    # Si terminó hace mucho (servidor parado), se guarda pero no se avisa.
+                    if now_ms - a["ends_at"] > 10 * 60_000:
+                        continue
+                    p = load_prefs(self.s, uid)
+                    urow = self.s.one("SELECT disabled FROM users WHERE id=?", (uid,))
+                    if not p["enabled"] or not p.get("pomoPush", True) or not urow or urow["disabled"]:
+                        continue
+                    if a["phase"] == "focus":
+                        title = "Pomodoro terminado"
+                        body = "Buen trabajo. Toca para empezar el descanso."
+                        if p["showTitles"] and a["card_id"]:
+                            rec = self.s.one("SELECT data FROM records WHERE id=? AND deleted=0", (a["card_id"],))
+                            if rec and self.s.one("SELECT 1 FROM members WHERE board_id=? AND user_id=? AND status='active'",
+                                                  (a["board_id"], uid)):
+                                body = "«%s». Toca para empezar el descanso." % json.loads(rec["data"]).get("title", "")[:120]
+                    else:
+                        title, body = "Descanso terminado", "¿Empezamos otro pomodoro?"
+                    outbox.append((uid, {"title": title, "body": body, "tag": "pomodoro", "url": "/#/pomodoro"}))
+                self.s.x("COMMIT")
+            except Exception:
+                self.s.x("ROLLBACK")
+                raise
+        for uid, payload in outbox:
+            vapid = self.app.vapid()
+            with self.s.lock:
+                subs = self.subs(uid)
+            send_to_subs(self.s, vapid, subs, payload, self.app.push_subject(),
+                         opener=getattr(self.app, "push_opener", None), ttl=600)
+        return len(ended)
+
+    def run_forever(self, interval=30):
+        """Revisión completa cada `interval` segundos; los pomodoros, en cuanto terminan."""
+        wake = threading.Event()
+        self.app.notifier_wake = wake
+        next_full = 0
+        while True:
+            t = now_ms_()
+            try:
+                if t >= next_full:
+                    next_full = t + interval * 1000
+                    self.tick(t)
+                self.pomo_tick()
             except Exception as e:  # pragma: no cover
                 print("Avisos: error %s" % type(e).__name__, file=sys.stderr, flush=True)
-            time.sleep(interval)
+            with self.s.lock:
+                nxt = self.s.one("SELECT MIN(ends_at) FROM pomo_active")[0]
+            until = min(next_full, nxt) if nxt else next_full
+            wake.wait(max(0.2, min(interval, (until - now_ms_()) / 1000 + 0.05)))
+            wake.clear()
 
 
 def now_ms_():
@@ -1236,7 +1357,283 @@ class PushApi:
         return {"sent": len(subs), "results": [{"service": urlparse(sb["endpoint"]).hostname, "status": st} for sb, st in res]}
 
 
-class App(PushApi):
+POMO_PHASES = {"focus", "short", "long"}
+POMO_DAY_CAP = 48                     # pomodoros registrados por persona y día como máximo
+POMO_BACKFILL_MS = 7 * 86400_000      # los hechos sin conexión se aceptan hasta 7 días después
+
+
+def pomo_json(r):
+    if not r:
+        return None
+    return {"id": r["id"], "phase": r["phase"], "cardId": r["card_id"], "boardId": r["board_id"],
+            "startedAt": r["started_at"], "endsAt": r["ends_at"], "minutes": r["minutes"]}
+
+
+class PomoApi:
+    """Pomodoro: un temporizador por persona, que el servidor vigila para avisar al terminar aunque la app esté
+    cerrada. Los completados quedan en pomo_log para las estadísticas."""
+
+    def pomo_card(self, u, card_id):
+        """Comprueba que la tarjeta existe y que la persona es miembro de su tablero. Devuelve el tablero."""
+        if card_id is None or card_id == "":
+            return None, None
+        if not isinstance(card_id, str) or not ID_RE.match(card_id):
+            raise ApiError(400, "invalid")
+        cid = card_id
+        r = self.s.one("SELECT board_id FROM records WHERE id=? AND kind='card' AND deleted=0", (cid,))
+        if not r or not self.membership(r["board_id"], u["id"]):
+            raise ApiError(403, "forbidden")
+        return cid, r["board_id"]
+
+    def pomo_today(self, u, now_ms):
+        p = load_prefs(self.s, u["id"])
+        tz = get_tz(p["tz"])
+        start = datetime.fromtimestamp(now_ms / 1000, tz).replace(hour=0, minute=0, second=0, microsecond=0)
+        return self.s.one("SELECT COUNT(*) FROM pomo_log WHERE user_id=? AND started_at>=?",
+                          (u["id"], int(start.timestamp() * 1000)))[0]
+
+    def pomo_state(self, u):
+        t = now_ms()
+        with self.s.lock:
+            act = self.s.one("SELECT * FROM pomo_active WHERE user_id=?", (u["id"],))
+            if act and act["ends_at"] <= t - 60_000:
+                # Terminó hace rato y el planificador no lo ha cerrado (por ejemplo, avisos desactivados): se cierra aquí.
+                self.s.x("DELETE FROM pomo_active WHERE user_id=? AND id=?", (u["id"], act["id"]))
+                if act["phase"] == "focus":
+                    self.s.x("INSERT OR IGNORE INTO pomo_log(user_id,card_id,board_id,started_at,minutes) VALUES(?,?,?,?,?)",
+                             (u["id"], act["card_id"], act["board_id"], act["started_at"], act["minutes"]))
+                act = None
+            today = self.pomo_today(u, t)
+            last = self.s.one("SELECT started_at, minutes FROM pomo_log WHERE user_id=? ORDER BY started_at DESC LIMIT 1", (u["id"],))
+        return {"active": pomo_json(act), "now": t, "today": today,
+                "lastEnd": last["started_at"] + last["minutes"] * 60000 if last else None}
+
+    def pomo_start(self, u, body):
+        if not POMO_USER.hit(u["id"]):
+            raise ApiError(429, "rate")
+        phase = body.get("phase")
+        minutes = body.get("minutes")
+        if phase not in POMO_PHASES or type(minutes) is not int or not 1 <= minutes <= 120:
+            raise ApiError(400, "invalid")
+        t = now_ms()
+        with self.s.lock:
+            cid, bid = self.pomo_card(u, body.get("cardId")) if phase == "focus" else (None, None)
+            pid = b64u(os.urandom(12))
+            self.s.x("""INSERT INTO pomo_active(user_id,id,phase,card_id,board_id,started_at,ends_at,minutes) VALUES(?,?,?,?,?,?,?,?)
+                        ON CONFLICT(user_id) DO UPDATE SET id=excluded.id, phase=excluded.phase, card_id=excluded.card_id,
+                        board_id=excluded.board_id, started_at=excluded.started_at, ends_at=excluded.ends_at, minutes=excluded.minutes""",
+                     (u["id"], pid, phase, cid, bid, t, t + minutes * 60000, minutes))
+        wake = getattr(self, "notifier_wake", None)
+        if wake:
+            wake.set()
+        return self.pomo_state(u)
+
+    def pomo_stop(self, u, body):
+        if not POMO_USER.hit(u["id"]):
+            raise ApiError(429, "rate")
+        pid = body.get("id")
+        with self.s.lock:
+            if isinstance(pid, str):
+                self.s.x("DELETE FROM pomo_active WHERE user_id=? AND id=?", (u["id"], pid))
+            else:
+                self.s.x("DELETE FROM pomo_active WHERE user_id=?", (u["id"],))
+        return self.pomo_state(u)
+
+    def pomo_log(self, u, body):
+        """Pomodoros terminados sin conexión. Se aceptan si son de los últimos 7 días, no se solapan con otros y no
+        pasan del máximo diario."""
+        items = body.get("items")
+        if not isinstance(items, list) or len(items) > 50:
+            raise ApiError(400, "invalid")
+        if not POMO_USER.hit(u["id"]):
+            raise ApiError(429, "rate")
+        t = now_ms()
+        added = 0
+        with self.s.lock:
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                st, mins = it.get("startedAt"), it.get("minutes")
+                if type(st) is not int or type(mins) is not int or not 1 <= mins <= 120:
+                    continue
+                end = st + mins * 60000
+                if st < t - POMO_BACKFILL_MS or end > t + 60_000:
+                    continue
+                try:
+                    cid, bid = self.pomo_card(u, it.get("cardId"))
+                except ApiError:
+                    cid, bid = None, None
+                # Sin solaparse con otro (ninguno dura más de 120 min, así que basta mirar esa ventana).
+                if self.s.one("""SELECT 1 FROM pomo_log WHERE user_id=? AND started_at > ? AND started_at < ?
+                                 AND started_at + minutes*60000 > ?""", (u["id"], st - 120 * 60000, end, st)):
+                    continue
+                # Máximo diario, contando hacia los dos lados (da igual el orden en que lleguen).
+                if self.s.one("SELECT COUNT(*) FROM pomo_log WHERE user_id=? AND started_at > ? AND started_at < ?",
+                              (u["id"], st - 86400_000, st + 86400_000))[0] >= POMO_DAY_CAP:
+                    continue
+                self.s.x("INSERT OR IGNORE INTO pomo_log(user_id,card_id,board_id,started_at,minutes) VALUES(?,?,?,?,?)",
+                         (u["id"], cid, bid, st, mins))
+                added += 1
+        return {"added": added, **self.pomo_state(u)}
+
+    def pomo_stats(self, u, days):
+        days = days if days in (7, 30, 365) else 7
+        t = now_ms()
+        with self.s.lock:
+            p = load_prefs(self.s, u["id"])
+            tz = get_tz(p["tz"])
+            today = datetime.fromtimestamp(t / 1000, tz).date()
+            first = today - timedelta(days=days - 1)
+            start_ms = int(datetime(first.year, first.month, first.day, tzinfo=tz).timestamp() * 1000)
+            rows = self.s.q("SELECT card_id, board_id, started_at, minutes FROM pomo_log WHERE user_id=? AND started_at>=?",
+                            (u["id"], start_ms))
+            member = {b["id"] for b in self.boards_list(u["id"])}
+            # Días con algún pomodoro, para la racha (como mucho un año hacia atrás).
+            streak_rows = self.s.q("SELECT started_at FROM pomo_log WHERE user_id=? AND started_at>=?",
+                                   (u["id"], t - 366 * 86400_000))
+        per_day = {(first + timedelta(days=i)).isoformat(): [0, 0] for i in range(days)}
+        boards, cards = {}, {}
+        for r in rows:
+            day = datetime.fromtimestamp(r["started_at"] / 1000, tz).date().isoformat()
+            if day in per_day:
+                per_day[day][0] += 1
+                per_day[day][1] += r["minutes"]
+            # Solo se nombran tableros y tarjetas de los que aún se es miembro.
+            bid = r["board_id"] if r["board_id"] in member else None
+            b = boards.setdefault(bid, [0, 0])
+            b[0] += 1
+            b[1] += r["minutes"]
+            if bid and r["card_id"]:
+                c = cards.setdefault(r["card_id"], [bid, 0, 0])
+                c[1] += 1
+                c[2] += r["minutes"]
+        active_days = {datetime.fromtimestamp(r["started_at"] / 1000, tz).date() for r in streak_rows}
+        streak, d = 0, today if today in active_days else today - timedelta(days=1)
+        while d in active_days:
+            streak += 1
+            d -= timedelta(days=1)
+        top = sorted(cards.items(), key=lambda kv: -kv[1][1])[:10]
+        return {
+            "days": [{"date": k, "count": v[0], "minutes": v[1]} for k, v in per_day.items()],
+            "boards": [{"boardId": k, "count": v[0], "minutes": v[1]} for k, v in sorted(boards.items(), key=lambda kv: -kv[1][0])],
+            "cards": [{"cardId": k, "boardId": v[0], "count": v[1], "minutes": v[2]} for k, v in top],
+            "total": {"count": sum(v[0] for v in per_day.values()), "minutes": sum(v[1] for v in per_day.values())},
+            "streak": streak,
+        }
+
+
+ICAL_PATH = re.compile(r"^/api/ical/([A-Za-z0-9_-]{43})\.ics$")
+HOST_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?$")
+
+
+def ics_text(s):
+    return (s or "").replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\\n")
+
+
+def ics_fold(line):
+    """Líneas de como mucho 75 octetos (RFC 5545), cortando sin partir caracteres UTF-8."""
+    out, cur, size = [], "", 0
+    for ch in line:
+        n = len(ch.encode())
+        if size + n > (75 if not out else 74):
+            out.append(cur)
+            cur, size = "", 0
+        cur += ch
+        size += n
+    out.append(cur)
+    return "\r\n ".join(out)
+
+
+class IcalApi:
+    """Enlace secreto de calendario por persona: sus tareas pendientes con fecha, para suscribirse desde el
+    calendario del móvil o del ordenador."""
+
+    def ical_info(self, u):
+        with self.s.lock:
+            r = self.s.one("SELECT created_at, excluded, last_fetch FROM ical_tokens WHERE user_id=?", (u["id"],))
+        if not r:
+            return {"active": False, "excluded": []}
+        return {"active": True, "createdAt": r["created_at"], "excluded": json.loads(r["excluded"]), "lastFetch": r["last_fetch"]}
+
+    def ical_new(self, u):
+        if not ICAL_NEW.hit(u["id"]):
+            raise ApiError(429, "rate")
+        token = b64u(os.urandom(32))
+        with self.s.lock:
+            old = self.s.one("SELECT excluded FROM ical_tokens WHERE user_id=?", (u["id"],))
+            self.s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
+            self.s.x("INSERT INTO ical_tokens(user_id,token_hash,created_at,excluded) VALUES(?,?,?,?)",
+                     (u["id"], sha(token), now(), old["excluded"] if old else "[]"))
+        return {"path": "/api/ical/%s.ics" % token, **self.ical_info(u)}
+
+    def ical_revoke(self, u):
+        with self.s.lock:
+            self.s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
+        return self.ical_info(u)
+
+    def ical_prefs(self, u, body):
+        ex = body.get("excluded")
+        if not isinstance(ex, list) or len(ex) > MAX_MEMBERSHIPS or not all(isinstance(x, str) and ID_RE.match(x) for x in ex):
+            raise ApiError(400, "invalid")
+        with self.s.lock:
+            self.s.x("UPDATE ical_tokens SET excluded=? WHERE user_id=?", (json.dumps(list(dict.fromkeys(ex))), u["id"]))
+        return self.ical_info(u)
+
+    def ical_feed(self, token, ip, host):
+        """Devuelve el texto .ics, o None si el enlace no es válido."""
+        # Los enlaces válidos tienen su propio límite; por IP solo cuentan los intentos con enlaces que no existen
+        # (así, varias personas detrás de la misma IP no se quitan el cupo unas a otras).
+        h = sha(token)
+        with self.s.lock:
+            r = self.s.one("""SELECT t.user_id, t.excluded, t.last_fetch, u.disabled FROM ical_tokens t JOIN users u ON u.id=t.user_id
+                              WHERE t.token_hash=?""", (h,))
+            if not r or r["disabled"]:
+                if not ICAL_BAD_IP.hit(ip):
+                    raise ApiError(429, "rate")
+                return None
+            if not ICAL_TOKEN.hit(h):
+                raise ApiError(429, "rate")
+            t = now()
+            if not r["last_fetch"] or t - r["last_fetch"] > 600:
+                self.s.x("UPDATE ical_tokens SET last_fetch=? WHERE user_id=?", (t, r["user_id"]))
+            excluded = set(json.loads(r["excluded"]))
+            boards = [b["id"] for b in self.boards_list(r["user_id"]) if b["id"] not in excluded]
+            events = []
+            for bid in boards:
+                bname = self.board_name(bid)[0] or ""
+                left = 5000 - len(events)
+                if left <= 0:
+                    break
+                for c in self.s.q("""SELECT id, data, updated_at FROM records WHERE board_id=? AND kind='card' AND deleted=0
+                                     AND json_extract(data,'$.due')<>'' AND json_extract(data,'$.done')=0
+                                     AND json_extract(data,'$.archived')=0 LIMIT ?""", (bid, left)):
+                    events.append((c["id"], json.loads(c["data"]), bname, c["updated_at"]))
+        base = ("https://" + host) if host and HOST_RE.match(host) else None
+        stamp = datetime.fromtimestamp(t, timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Tackboard//ES", "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+                 "X-WR-CALNAME:Tackboard", "REFRESH-INTERVAL;VALUE=DURATION:PT1H", "X-PUBLISHED-TTL:PT1H"]
+        for cid, d, bname, upd in events:
+            lines += ["BEGIN:VEVENT", "UID:%s@tackboard" % cid, "DTSTAMP:" + stamp]
+            if d.get("dueTime") and d.get("dueAt"):
+                lines.append("DTSTART:" + datetime.fromtimestamp(d["dueAt"] / 1000, timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+                lines.append("DURATION:PT15M")
+            else:
+                day = datetime.strptime(d["due"], "%Y-%m-%d").date()
+                lines.append("DTSTART;VALUE=DATE:" + day.strftime("%Y%m%d"))
+                lines.append("DTEND;VALUE=DATE:" + (day + timedelta(days=1)).strftime("%Y%m%d"))
+            lines.append("SUMMARY:" + ics_text(d.get("title", "")[:200]))
+            lines.append("DESCRIPTION:" + ics_text("Tablero: %s" % bname))
+            if base:
+                lines.append("URL:%s/#/tarjeta/%s" % (base, cid))
+            if isinstance(upd, int) and upd > 0:
+                lines.append("LAST-MODIFIED:" + datetime.fromtimestamp(upd / 1000, timezone.utc).strftime("%Y%m%dT%H%M%SZ"))
+            lines.append("TRANSP:TRANSPARENT")
+            lines.append("END:VEVENT")
+        lines.append("END:VCALENDAR")
+        return "\r\n".join(ics_fold(x) for x in lines) + "\r\n"
+
+
+class App(PushApi, PomoApi, IcalApi):
     def __init__(self, store):
         self._vapid = None
         self.s = store
@@ -1407,6 +1804,8 @@ class App(PushApi):
             self.s.x("UPDATE users SET pw_hash=?, recovery_hash=? WHERE id=?", (pw_hash, sha(norm_code(new_code)), u["id"]))
             self.s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
             self.s.x("DELETE FROM push_subs WHERE user_id=?", (u["id"],))
+            # Si alguien recupera la cuenta, el enlace de calendario anterior deja de funcionar.
+            self.s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
             tok = self.issue_token(u["id"])
         return {"token": tok, "user": user_json(u), "recoveryCode": new_code}
 
@@ -1444,6 +1843,7 @@ class App(PushApi):
             # Este dispositivo conserva sus avisos (pasan a la sesión nueva); los de las demás sesiones se borran.
             self.s.x("UPDATE push_subs SET token_hash=? WHERE user_id=? AND token_hash=?", (sha(tok), u["id"], tok_hash))
             self.s.x("DELETE FROM push_subs WHERE user_id=? AND (token_hash IS NULL OR token_hash<>?)", (u["id"], sha(tok)))
+            self.s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
         return {"token": tok}
 
     def new_recovery(self, u, body):
@@ -1497,6 +1897,9 @@ class App(PushApi):
             push = [{"service": urlparse(r["endpoint"]).hostname, "createdAt": r["created_at"], "lastOk": r["last_ok"]}
                     for r in self.s.q("SELECT endpoint, created_at, last_ok FROM push_subs WHERE user_id=?", (u["id"],))]
             notify_prefs = load_prefs(self.s, u["id"])
+            pomodoros = [{"cardId": r["card_id"], "boardId": r["board_id"], "startedAt": r["started_at"], "minutes": r["minutes"]}
+                         for r in self.s.q("SELECT * FROM pomo_log WHERE user_id=? ORDER BY started_at", (u["id"],))]
+            ical = self.s.one("SELECT created_at, excluded, last_fetch FROM ical_tokens WHERE user_id=?", (u["id"],))
         return {
             "app": "Tackboard",
             "exportedAt": now(),
@@ -1508,6 +1911,9 @@ class App(PushApi):
             "sessions": sessions,
             "pushDevices": push,
             "notificationPrefs": notify_prefs,
+            "pomodoros": pomodoros,
+            "calendarLink": {"createdAt": ical["created_at"], "excludedBoards": json.loads(ical["excluded"]),
+                             "lastFetch": ical["last_fetch"]} if ical else None,
         }
 
     # ---- sincronización ---------------------------------------------------------------------------
@@ -1614,6 +2020,12 @@ class App(PushApi):
                 data = CLEANERS[kind](raw)
             except Invalid as e:
                 raise ApiError(400, "invalid:%s" % e)
+            # La "siguiente" de una tarea que se repite solo puede estar en el mismo tablero (si no, el cliente de
+            # otra persona podría acabar borrando una tarjeta de un tablero ajeno al reabrir esta).
+            if kind == "card" and data.get("repeatedAs"):
+                ref = self.s.one("SELECT board_id FROM records WHERE id=?", (data["repeatedAs"]["id"],))
+                if ref and ref["board_id"] != board_id:
+                    data["repeatedAs"] = None
             data_json = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
             size = len(data_json.encode())
             if size > MAX_RECORD_BYTES:
@@ -1812,6 +2224,9 @@ def delete_user(store, uid):
     store.x("DELETE FROM push_subs WHERE user_id=?", (uid,))
     store.x("DELETE FROM notify_prefs WHERE user_id=?", (uid,))
     store.x("DELETE FROM notify_log WHERE user_id=?", (uid,))
+    store.x("DELETE FROM pomo_active WHERE user_id=?", (uid,))
+    store.x("DELETE FROM pomo_log WHERE user_id=?", (uid,))
+    store.x("DELETE FROM ical_tokens WHERE user_id=?", (uid,))
     store.x("DELETE FROM users WHERE id=?", (uid,))
 
 
@@ -1846,6 +2261,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         for k, v in (extra_headers or {}).items():
             self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_text(self, status, text, ctype):
+        body = text.encode()
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Disposition", 'inline; filename="tackboard.ics"')
         self.end_headers()
         self.wfile.write(body)
 
@@ -1895,6 +2321,13 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/auth/recover":
             return self.send_json(200, app.recover(self.read_body(MAX_BODY), ip))
 
+        m = ICAL_PATH.match(path)
+        if m and method == "GET":
+            text = app.ical_feed(m.group(1), ip, self.headers.get("Host"))
+            if text is None:
+                raise ApiError(404, "not_found")
+            return self.send_text(200, text, "text/calendar; charset=utf-8")
+
         u, tok_hash = app.auth(self.headers.get("Authorization"), ip)
 
         if method == "POST" and path == "/api/sync":
@@ -1910,6 +2343,7 @@ class Handler(BaseHTTPRequestHandler):
             with app.s.lock:
                 app.s.x("DELETE FROM push_subs WHERE user_id=? AND (token_hash IS NULL OR token_hash<>?)", (u["id"], tok_hash))
                 app.s.x("DELETE FROM tokens WHERE user_id=? AND hash<>?", (u["id"], tok_hash))
+            app.s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
             return self.send_json(200, {"ok": True})
         if method == "GET" and path == "/api/me":
             return self.send_json(200, {"user": user_json(u)})
@@ -1942,6 +2376,31 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, app.notify_prefs(u))
             if method == "POST" and path == "/api/push/prefs":
                 return self.send_json(200, app.set_notify_prefs(u, body))
+        if path.startswith("/api/pomo"):
+            if method == "GET" and path == "/api/pomo":
+                return self.send_json(200, app.pomo_state(u))
+            if method == "POST" and path == "/api/pomo/start":
+                return self.send_json(200, app.pomo_start(u, body))
+            if method == "POST" and path == "/api/pomo/stop":
+                return self.send_json(200, app.pomo_stop(u, body))
+            if method == "POST" and path == "/api/pomo/log":
+                return self.send_json(200, app.pomo_log(u, body))
+            if method == "GET" and path == "/api/pomo/stats":
+                q = parse_qs(urlparse(self.path).query)
+                try:
+                    days = int((q.get("days") or ["7"])[0])
+                except ValueError:
+                    days = 7
+                return self.send_json(200, app.pomo_stats(u, days))
+        if path.startswith("/api/ical"):
+            if method == "GET" and path == "/api/ical":
+                return self.send_json(200, app.ical_info(u))
+            if method == "POST" and path == "/api/ical/new":
+                return self.send_json(200, app.ical_new(u))
+            if method == "POST" and path == "/api/ical/revoke":
+                return self.send_json(200, app.ical_revoke(u))
+            if method == "POST" and path == "/api/ical/prefs":
+                return self.send_json(200, app.ical_prefs(u, body))
         m = ROUTE_INVITE.match(path)
         if m and method == "POST":
             return self.send_json(200, app.answer_invitation(u, m.group(1), body))
@@ -2090,6 +2549,7 @@ def admin(argv):
         s.x("UPDATE users SET pw_hash=? WHERE id=?", (hash_password(pw), u["id"]))
         s.x("DELETE FROM tokens WHERE user_id=?", (u["id"],))
         s.x("DELETE FROM push_subs WHERE user_id=?", (u["id"],))
+        s.x("DELETE FROM ical_tokens WHERE user_id=?", (u["id"],))
         print("Nueva contraseña de %s: %s" % (arg, pw))
         return
     if cmd in ("disable", "enable") and arg:

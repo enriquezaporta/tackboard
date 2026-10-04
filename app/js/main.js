@@ -9,6 +9,8 @@ import { renderCalendar } from './views/calendar.js';
 import { renderSettings, syncClass } from './views/settings.js';
 import { renderAuth, askConsent } from './views/auth.js';
 import { openCard } from './sheets.js';
+import { renderPomodoro } from './views/pomodoro.js';
+import { pomo, restorePomo, loadPomo, onTick, remaining, fmt, PHASE_NAME, resetPomo } from './pomo.js';
 
 /** Al tocar un aviso se abre #/tarjeta/<id>: se muestra su tablero y encima la tarjeta. */
 let opening = null;
@@ -36,6 +38,7 @@ const TABS = [
   ['hoy', 'Hoy', 'sun'],
   ['tableros', 'Tableros', 'board'],
   ['calendario', 'Calendario', 'cal'],
+  ['pomodoro', 'Pomodoro', 'timer'],
   ['ajustes', 'Ajustes', 'settings'],
 ];
 const section = (name) => (name === 'tablero' ? 'tableros' : name);
@@ -71,7 +74,9 @@ function render() {
   pendingRender = false;
   const r = route();
   applyTheme();
+  updatePill(r);
   if (!S.state.user) {
+    if (pomo.active || pomo.finished) resetPomo();
     document.body.classList.add('auth-page');
     renderAuth(main);
     return;
@@ -83,10 +88,30 @@ function render() {
   else if (r.name === 'tablero') renderBoard(main, r.arg);
   else if (r.name === 'calendario') renderCalendar(main, r.arg);
   else if (r.name === 'ajustes') renderSettings(main);
+  else if (r.name === 'pomodoro') renderPomodoro(main);
   else if (r.name === 'tarjeta') { openFromNotification(r.arg); return; }
   else renderToday(main);
   paint(main);
 }
+
+// Mientras hay un pomodoro en marcha se ve el tiempo que queda en cualquier pantalla y en el título.
+const pill = document.createElement('a');
+pill.id = 'pomo-pill';
+pill.href = '#/pomodoro';
+pill.hidden = true;
+document.body.append(pill);
+function updatePill(r = route()) {
+  const a = S.state.user && pomo.active;
+  pill.hidden = !a || r.name === 'pomodoro';
+  pill.className = a ? `is-${a.phase}` : '';
+  if (a) {
+    const t = fmt(remaining());
+    pill.innerHTML = `${icon('timer', 's')}<span class="mono">${t}</span>`;
+    pill.setAttribute('aria-label', `${PHASE_NAME[a.phase]}: quedan ${t}`);
+    document.title = `${t} · Tackboard`;
+  } else document.title = 'Tackboard';
+}
+onTick(() => updatePill());
 
 document.addEventListener('focusout', () => setTimeout(() => { if (pendingRender) render(); }, 0));
 document.addEventListener('pointerup', () => setTimeout(() => { if (pendingRender) render(); }, 30));
@@ -117,10 +142,13 @@ S.subscribe(render);
 
 (async function start() {
   await S.load();
+  await restorePomo();
   lastRoute = location.hash;
   render();
-  if (S.state.user) { S.sync(); S.loadNotifyPrefs(); }
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.state.user) S.sync(); });
+  if (S.state.user) { S.sync(); S.loadNotifyPrefs(); loadPomo(); }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && S.state.user) { S.sync(); loadPomo(); }
+  });
   window.addEventListener('online', () => S.state.user && S.sync());
   // Mientras la app está abierta, se recogen cada minuto los cambios de los tableros compartidos.
   setInterval(() => { if (document.visibilityState === 'visible' && S.state.user) S.sync(); }, 60000);

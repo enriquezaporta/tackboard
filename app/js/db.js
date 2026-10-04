@@ -24,7 +24,7 @@ function tx(stores, mode, fn) {
   return open().then((db) => new Promise((resolve, reject) => {
     const t = db.transaction(stores, mode);
     const out = fn(t);
-    t.oncomplete = () => resolve(out?.result ?? out);
+    t.oncomplete = () => resolve(out instanceof IDBRequest ? out.result : out);
     t.onerror = () => reject(t.error);
     t.onabort = () => reject(t.error);
   }));

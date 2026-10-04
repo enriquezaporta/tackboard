@@ -23,7 +23,7 @@ Todo lo que hay en un tablero es un **registro** con la misma forma:
 |---|---|
 | `board` | `name`, `color`, `labels[]` (id, nombre, color), `pos` |
 | `column` | `name`, `pos`, `wip` (límite o `null`), `isDone` |
-| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
+| `card` | `columnId`, `title`, `description`, `start`, `due`, `dueTime`, `dueAt`, `alertBase`, `reminders[]`, `repeat`, `repeatedAs`, `priority`, `labels[]`, `checklist[]`, `pos`, `done`, `doneAt`, `archived` |
 
 - **Orden**: las columnas y las tarjetas se ordenan por `pos`, un número decimal. Insertar entre dos tarjetas usa el
   punto medio; si se agota el hueco, se renumera la columna.
@@ -41,6 +41,9 @@ Tablas de SQLite:
 | `members` | Quién está en cada tablero y con qué permiso (`owner`, `admin`, `write`, `read`), o si la invitación está pendiente |
 | `records` | Los registros, con `server_ts` (marca creciente del servidor) |
 | `deleted_boards` | Identificadores de tableros borrados, para que un cliente desfasado no los resucite |
+| `push_subs`, `notify_prefs`, `notify_log`, `settings` | Avisos (ver más abajo) |
+| `pomo_active`, `pomo_log` | Pomodoro en marcha de cada persona y pomodoros completados |
+| `ical_tokens` | Enlace de calendario de cada persona: sha256 del enlace, tableros excluidos, última consulta |
 
 ## Sincronización
 
@@ -111,6 +114,40 @@ El cliente sincroniza:
 - **Envío**: cifrado para cada dispositivo (RFC 8291) y firmado con la clave VAPID de la instalación (RFC 8292). El
   service worker muestra la notificación y, al tocarla, abre `#/tarjeta/<id>`.
 
+## Tareas que se repiten
+
+- La regla va en la tarjeta: `repeat = {freq, every, days, day}`. `freq` es `day`, `weekday`, `week`, `month` o `year`;
+  `every`, cada cuántos (1-99); `days`, los días de la semana (0 = domingo) si es semanal; `day`, el día del mes de
+  referencia, para que «cada mes el 31» caiga el 28 o el 30 cuando toca y vuelva al 31 después.
+- Lo hace el cliente, en `store.js` (`repeatHook`): al pasar una tarjeta a completada, crea la siguiente con la próxima
+  fecha que no haya pasado (copia del título, descripción, etiquetas, checklist sin marcar, avisos y regla) en la primera
+  columna, y quita la regla de la completada.
+- La siguiente tiene un identificador fijo, `<tarjeta original>_r<AAAAMMDD>`: si dos dispositivos la completan sin
+  conexión, crean el mismo registro y no dos.
+- La completada guarda `repeatedAs = {id, at}`. Si se reabre y la siguiente no se ha tocado (mismo `updatedAt`), la
+  siguiente se borra y la regla vuelve. El servidor anula `repeatedAs` si apunta a otro tablero.
+
+## Pomodoro
+
+- Un temporizador por persona en `pomo_active`, con la hora de fin calculada por el servidor. El cliente corrige la
+  diferencia entre su reloj y el del servidor.
+- El planificador de avisos duerme hasta el siguiente fin de pomodoro (o 30 s), así que el aviso llega en cuanto termina,
+  aunque la app esté cerrada. Al terminar un pomodoro lo guarda en `pomo_log`; los descansos no se guardan.
+- Si se detiene antes de tiempo, no cuenta.
+- Sin conexión, el temporizador funciona en el dispositivo y el pomodoro terminado se envía después a `POST /api/pomo/log`,
+  que solo acepta los de los últimos 7 días, sin solaparse con otros y con un máximo de 48 al día.
+- Las estadísticas (`GET /api/pomo/stats?days=7|30|365`) agrupan por día en la zona horaria de la persona, por tablero y
+  por tarjeta, y calculan la racha de días seguidos. Los títulos los pone el cliente con sus datos locales.
+
+## Calendario (iCal)
+
+- `POST /api/ical/new` crea un enlace aleatorio de 256 bits, `/api/ical/<token>.ics`, y lo devuelve una sola vez. En la
+  base de datos solo queda su sha256.
+- `GET /api/ical/<token>.ics` no necesita sesión: el enlace es la credencial. Devuelve las tareas pendientes con fecha
+  de los tableros de la persona, menos los excluidos: las de todo el día como evento de día completo; las que tienen hora,
+  como un evento de 15 minutos a esa hora. Sin alarmas, para no duplicar los avisos de la app.
+- Texto escapado y líneas de 75 octetos como pide el RFC 5545. Como mucho 5.000 eventos.
+
 ## Permisos
 
 Se comprueban **siempre en el servidor**, registro a registro. La interfaz solo oculta lo que no se puede hacer.
@@ -143,14 +180,20 @@ Además:
 | `POST`/`DELETE /api/boards/<id>/members/<usuario>` | Cambiar permiso / quitar o salir |
 | `GET /api/invitations`, `POST /api/invitations/<id>` | Invitaciones recibidas, aceptar o rechazar |
 | `GET /api/push/key`, `POST /api/push/subscribe`, `/unsubscribe`, `/test` | Avisos: clave VAPID, suscripción del dispositivo y aviso de prueba |
+| `GET`/`POST /api/push/prefs` | Preferencias de avisos |
+| `GET /api/pomo`, `POST /api/pomo/start`, `/stop`, `/log`, `GET /api/pomo/stats` | Pomodoro |
+| `GET /api/ical`, `POST /api/ical/new`, `/revoke`, `/prefs` | Enlace de calendario |
+| `GET /api/ical/<token>.ics` | El calendario (sin sesión: el enlace es la credencial) |
 
-Todo salvo `health`, `legal`, `register`, `login` y `recover` necesita `Authorization: Bearer <token>`.
+Todo salvo `health`, `legal`, `register`, `login`, `recover` y el `.ics` necesita `Authorization: Bearer <token>`.
 
 ## Código
 
 | Archivo | Qué hace |
 |---|---|
-| `app/js/main.js` | Arranque, rutas (`#/hoy`, `#/tableros`, `#/tablero/<id>`, `#/calendario`, `#/ajustes`) y estructura |
+| `app/js/main.js` | Arranque, rutas (`#/hoy`, `#/tableros`, `#/tablero/<id>`, `#/calendario`, `#/pomodoro`, `#/ajustes`, `#/tarjeta/<id>`) y estructura |
+| `app/js/pomo.js` | Estado del pomodoro, sincronizado con el servidor |
+| `app/js/push.js` | Suscripción a los avisos del dispositivo |
 | `app/js/store.js` | Estado en memoria, cambios locales y sincronización |
 | `app/js/db.js` | IndexedDB |
 | `app/js/drag.js` | Arrastrar y soltar con eventos de puntero |
@@ -164,4 +207,5 @@ Todo salvo `health`, `legal`, `register`, `login` y `recover` necesita `Authoriz
 - **Offline-first**: la app debe responder al instante, haya o no conexión.
 - **Sin correo**: menos datos personales. La recuperación se hace con un código que solo tiene el usuario.
 - **Registros genéricos**: un único mecanismo de sincronización y permisos para tableros, columnas y tarjetas.
-  Añadir tipos nuevos (por ejemplo, sesiones de pomodoro) no cambia el protocolo.
+- **El pomodoro no es un registro**: es de una sola persona (no de un tablero) y el servidor tiene que vigilar cuándo
+  termina para avisar. Por eso tiene su propia API en vez de ir por la sincronización.

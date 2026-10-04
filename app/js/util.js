@@ -59,6 +59,59 @@ export function alertBase(due, time) {
 /** Recordatorios posibles, en el orden en que se muestran. */
 export const REMINDERS = [['2d', '2 días antes'], ['1d', '1 día antes'], ['3h', '3 h antes'], ['1h', '1 h antes'], ['15m', '15 min antes'], ['due', 'Al vencer']];
 
+// ---------- Repetición ----------
+export const REPEAT_FREQ = [['', 'No se repite'], ['day', 'Diaria'], ['weekday', 'Días laborables'], ['week', 'Semanal'], ['month', 'Mensual'], ['year', 'Anual']];
+const EVERY1 = { day: 'Cada día', week: 'Cada semana', month: 'Cada mes', year: 'Cada año' };
+const UNIT = { day: ['día', 'días'], week: ['semana', 'semanas'], month: ['mes', 'meses'], year: ['año', 'años'] };
+export const DOW_LETTER = ['D', 'L', 'M', 'X', 'J', 'V', 'S'];
+const DOW_ORDER = [1, 2, 3, 4, 5, 6, 0];  // la semana empieza el lunes
+const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+const mondayOf = (d) => { const x = new Date(d); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; };
+
+/** Siguiente fecha después de `due` según la regla (sin tener en cuenta hoy). */
+function stepDue(due, r) {
+  const d = parseDate(due);
+  const every = Math.max(1, Math.min(99, r.every || 1));
+  if (r.freq === 'day') d.setDate(d.getDate() + every);
+  else if (r.freq === 'weekday') {
+    do d.setDate(d.getDate() + 1); while (d.getDay() === 0 || d.getDay() === 6);
+  } else if (r.freq === 'week') {
+    const days = (r.days || []).length ? r.days : [d.getDay()];
+    const base = mondayOf(d);
+    for (let i = 0; i < 7 * every + 7; i++) {
+      d.setDate(d.getDate() + 1);
+      const weeks = Math.round((mondayOf(d) - base) / (7 * 86400000));
+      if (weeks % every === 0 && days.includes(d.getDay())) break;
+    }
+  } else if (r.freq === 'month' || r.freq === 'year') {
+    const anchor = r.day || d.getDate();
+    const months = r.freq === 'month' ? every : 12 * every;
+    const y = d.getFullYear(), m = d.getMonth() + months;
+    const target = new Date(y, m, 1);
+    target.setDate(Math.min(anchor, daysInMonth(target.getFullYear(), target.getMonth())));
+    return dateStr(target);
+  }
+  return dateStr(d);
+}
+
+/** Fecha de la siguiente vez: la primera después de `due` que no haya pasado ya. */
+export function nextDue(due, r, today = todayStr()) {
+  let n = stepDue(due, r);
+  for (let i = 0; i < 2000 && n < today; i++) n = stepDue(n, r);
+  return n;
+}
+
+/** Texto de la regla: «Cada 2 semanas: L, X», «Días laborables»… */
+export function repeatLabel(r) {
+  if (!r || !r.freq) return '';
+  if (r.freq === 'weekday') return 'Días laborables';
+  const n = r.every || 1;
+  let t = n === 1 ? EVERY1[r.freq] : `Cada ${n} ${UNIT[r.freq][1]}`;
+  if (r.freq === 'week' && (r.days || []).length) t += `: ${DOW_ORDER.filter((x) => r.days.includes(x)).map((x) => DOW_LETTER[x]).join(', ')}`;
+  return t;
+}
+export { DOW_ORDER, UNIT as REPEAT_UNIT };
+
 export function dueAt(due, time) {
   if (!due) return null;
   const d = parseDate(due);
@@ -136,6 +189,8 @@ const ICONS = {
   inbox: '<path d="M3 13l3-8h12l3 8v6a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1z"/><path d="M3 13h5l1 3h6l1-3h5"/>',
   filter: '<path d="M4 5h16l-6 8v5l-4 2v-7z"/>',
   pin: '<path d="M9 3h6l-1 6 4 4H6l4-4z"/><path d="M12 13v8"/>',
+  timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2.5M9.5 2.5h5M12 2.5V5"/>',
+  play: '<path d="M8 5.5v13l10-6.5z"/>',
   bell: '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
 };
 export const icon = (name, cls = '') => `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;

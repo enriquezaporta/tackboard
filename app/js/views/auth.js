@@ -69,6 +69,7 @@ export function renderAuth(main) {
       location.hash = '#/';
       S.sync();
       S.loadNotifyPrefs();
+      import('../pomo.js').then((m) => m.loadPomo());
     } catch (ex) {
       err.textContent = errorText(ex);
     } finally { btn.disabled = false; }

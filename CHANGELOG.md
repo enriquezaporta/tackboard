@@ -1,5 +1,19 @@
 # Cambios
 
+## 1.2.0 — 2026-10-04
+
+- **Tareas que se repiten**: diaria, días laborables, semanal (eligiendo días), mensual, anual y «cada N». Al completarla
+  se crea la siguiente; si se reabre por error, la siguiente se quita.
+- **Pomodoro**: nueva pestaña con temporizador ligado a una tarea, descansos corto y largo, aviso al terminar aunque la
+  app esté cerrada, tiempo restante visible en todas las pantallas y estadísticas (7 días, 30 días, año; por tablero y por
+  tarea; racha de días). Se puede empezar desde una tarjeta. Funciona sin conexión.
+- **Calendario del móvil**: enlace secreto iCal por persona, con tableros excluibles, para suscribirse desde el
+  calendario del iPhone, Android u Outlook. Se puede renovar o desactivar.
+- La política de privacidad se actualiza con los datos del pomodoro y del enlace de calendario (se pide aceptarla de nuevo).
+- Corregido: las preferencias guardadas en el dispositivo que aún no existían no tomaban su valor por defecto.
+- GitHub Actions actualizadas a sus versiones con Node 24.
+- Una revisión de seguridad independiente de lo nuevo: 2 fallos medios y 5 bajos, corregidos (ver docs/seguridad.md).
+
 ## 1.1.3 — 2026-10-04
 
 - *Columnas*: el campo «Límite WIP» ocupaba toda la fila y tapaba su texto. Ahora tiene ancho fijo. Lo mismo en

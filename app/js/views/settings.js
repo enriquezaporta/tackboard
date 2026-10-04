@@ -1,14 +1,14 @@
 // Ajustes: cuenta, sincronización, apariencia, privacidad y seguridad.
 import * as S from '../store.js';
 import { get, post, errorText, getToken } from '../api.js';
-import { esc, icon, toast, REMINDERS } from '../util.js';
+import { esc, icon, toast, REMINDERS, paint } from '../util.js';
 import { confirmDialog, openSheet } from '../ui.js';
 import { openInvitations } from '../sheets.js';
 import { showRecoveryCode } from './auth.js';
 import { pushState, enablePush, disablePush, testPush } from '../push.js';
 const deviceTz = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ''; } };
 
-export const APP_VERSION = '1.1.3';
+export const APP_VERSION = '1.2.0';
 
 function syncText() {
   const s = S.state.sync;
@@ -56,6 +56,11 @@ export function renderSettings(main) {
         <span class="seg" role="group" aria-label="Tema">${[['auto', 'Automático'], ['light', 'Claro'], ['dark', 'Oscuro']].map(([k, n]) =>
           `<button type="button" data-theme-set="${k}" aria-pressed="${theme === k}">${n}</button>`).join('')}</span></div></div>
 
+      <h2 class="section-title">Calendario del móvil</h2>
+      <div class="list" id="ical-box"><div class="list-row"><span class="grow muted">Cargando…</span></div></div>
+      <p class="hint">Un enlace secreto para ver tus tareas con fecha en el calendario del iPhone, Android, Outlook o Google Calendar.
+        Se actualiza solo, normalmente cada hora; es de solo lectura.</p>
+
     </div><div class="settings-col">
       <h2 class="section-title">Avisos</h2>
       <div class="list" id="push-box"><div class="list-row"><span class="grow muted">Comprobando este dispositivo…</span></div></div>
@@ -81,6 +86,7 @@ export function renderSettings(main) {
     </div></div></div>`;
 
   renderPush(main);
+  renderIcal(main);
   bindNotify(main);
   if (!S.state.notify.prefs && !prefsRequested) { prefsRequested = true; S.loadNotifyPrefs(); }
 
@@ -112,7 +118,7 @@ export function renderSettings(main) {
       }
     }
     if (act === 'others') {
-      if (await confirmDialog({ title: 'Cerrar otras sesiones', text: 'Tendrás que volver a entrar en tus otros dispositivos.', ok: 'Cerrar sesiones' })) {
+      if (await confirmDialog({ title: 'Cerrar otras sesiones', text: 'Tendrás que volver a entrar en tus otros dispositivos. Si tienes enlace de calendario, también se desactiva.', ok: 'Cerrar sesiones' })) {
         try { await post('/api/auth/logout-others'); toast('Hecho'); } catch (err) { toast(errorText(err)); }
       }
     }
@@ -123,6 +129,72 @@ export function renderSettings(main) {
 }
 
 let prefsRequested = false;
+
+// ---------- Enlace de calendario (iCal) ----------
+const fmtDate = (s) => new Date(s * 1000).toLocaleString('es-ES', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+
+async function renderIcal(main) {
+  const box = main.querySelector('#ical-box');
+  let info;
+  try { info = await get('/api/ical'); } catch {
+    if (document.body.contains(box)) box.innerHTML = '<div class="list-row"><span class="grow muted">Necesita conexión con el servidor.</span></div>';
+    return;
+  }
+  if (!document.body.contains(box)) return;
+  if (!info.active) {
+    box.innerHTML = `<div class="list-row"><span class="grow">Sin enlace</span>
+      <button type="button" class="btn sm primary" data-ical="new">Crear enlace</button></div>`;
+  } else {
+    const ex = new Set(info.excluded);
+    box.innerHTML = `<div class="list-row"><span class="grow">Enlace activo<br><span class="hint">Creado el ${esc(fmtDate(info.createdAt))}${
+      info.lastFetch ? ` · consultado el ${esc(fmtDate(info.lastFetch))}` : ' · aún no se ha consultado'}</span></span></div>
+      ${S.boards().map((b) => `<div class="list-row"><span class="sq" data-c="${esc(b.data.color)}"></span><label for="ic-${esc(b.id)}" class="grow">${esc(b.data.name)}</label>
+        <span class="switch"><input id="ic-${esc(b.id)}" type="checkbox" data-ical-board="${esc(b.id)}" ${ex.has(b.id) ? '' : 'checked'}><span></span></span></div>`).join('')}
+      <div class="list-row"><button type="button" class="btn sm" data-ical="new">Crear un enlace nuevo</button><span class="grow"></span>
+        <button type="button" class="btn sm danger" data-ical="revoke">Desactivar</button></div>`;
+  }
+  paint(box);
+  box.querySelectorAll('[data-ical-board]').forEach((cb) => cb.addEventListener('change', async () => {
+    const excluded = [...box.querySelectorAll('[data-ical-board]')].filter((x) => !x.checked).map((x) => x.dataset.icalBoard);
+    try { await post('/api/ical/prefs', { excluded }); } catch (err) { cb.checked = !cb.checked; toast(errorText(err)); }
+  }));
+  box.querySelector('[data-ical="new"]')?.addEventListener('click', async () => {
+    if (info.active && !await confirmDialog({ title: 'Crear un enlace nuevo', text: 'El enlace actual dejará de funcionar: tendrás que suscribirte otra vez con el nuevo.', ok: 'Crear enlace' })) return;
+    try { const r = await post('/api/ical/new'); showIcalLink(r.path); } catch (err) { toast(errorText(err)); }
+    renderIcal(main);
+  });
+  box.querySelector('[data-ical="revoke"]')?.addEventListener('click', async () => {
+    if (!await confirmDialog({ title: 'Desactivar el enlace', text: 'Los calendarios suscritos dejarán de recibir tus tareas.', ok: 'Desactivar', danger: true })) return;
+    try { await post('/api/ical/revoke'); toast('Enlace desactivado'); } catch (err) { toast(errorText(err)); }
+    renderIcal(main);
+  });
+}
+
+function showIcalLink(path) {
+  const url = `${location.origin}${path}`;
+  const webcal = url.replace(/^https?:/, 'webcal:');
+  openSheet({
+    title: 'Enlace de calendario',
+    render(el) {
+      el.innerHTML = `
+        <p class="small">Cópialo ahora: por seguridad no se vuelve a mostrar. Si lo pierdes, crea uno nuevo.</p>
+        <label class="sr" for="ical-url">Enlace</label>
+        <input id="ical-url" class="input mono" readonly value="${esc(url)}">
+        <div class="row"><button type="button" class="btn grow" id="ical-copy">Copiar</button>
+          <a class="btn primary grow" href="${esc(webcal)}">Añadir al calendario</a></div>
+        <h3 class="sub-title">iPhone</h3>
+        <p class="small">Toca <strong>Añadir al calendario</strong> y confirma. O bien: <em>Ajustes → Calendario → Cuentas → Añadir cuenta → Otra →
+          Añadir calendario suscrito</em> y pega el enlace. Elige guardarlo <strong>En mi iPhone</strong> (no en iCloud) para que las tareas no salgan del teléfono.</p>
+        <h3 class="sub-title">Google Calendar u Outlook</h3>
+        <p class="small">«Añadir calendario → Desde URL» y pega el enlace. Ojo: esos servicios tienen que poder llegar a tu servidor desde internet.</p>
+        <p class="hint">Quien tenga el enlace puede ver los títulos y fechas de tus tareas. No lo compartas; si crees que alguien lo tiene, crea uno nuevo.</p>`;
+      el.querySelector('#ical-copy').addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(url); toast('Enlace copiado'); }
+        catch { const i = el.querySelector('#ical-url'); i.select(); toast('Selecciónalo y cópialo'); }
+      });
+    },
+  });
+}
 
 function notifyHtml() {
   const n = S.state.notify;

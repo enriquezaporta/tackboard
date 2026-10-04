@@ -34,6 +34,58 @@ Dentro de una tarjeta puedes poner:
 - etiquetas del tablero;
 - una checklist. Su progreso se ve en el tablero y en *Hoy*.
 
+## Tareas que se repiten
+
+En una tarjeta con fecha, fila **Repetir**:
+
+- **Diaria**, **Días laborables** (de lunes a viernes), **Semanal**, **Mensual** o **Anual**.
+- **Cada N**: por ejemplo, cada 2 semanas o cada 3 meses.
+- En las semanales eliges los días: L, M, X, J, V, S, D.
+
+Al completarla se crea la siguiente con la próxima fecha, en la primera columna del tablero, con la checklist sin marcar
+y los mismos avisos. Si la siguiente fecha ya ha pasado (porque la completas tarde), salta a la primera que no haya
+pasado. Si la reabres por error, la siguiente desaparece mientras no la hayas tocado.
+
+«Cada mes el día 31» cae el último día en los meses más cortos y vuelve al 31 en cuanto se puede.
+
+El icono de las flechas en una tarjeta indica que se repite.
+
+## Pomodoro
+
+La técnica: 25 minutos concentrado en una sola cosa, 5 de descanso y, cada 4 pomodoros, un descanso largo de 15.
+
+1. Pestaña **Pomodoro** (o, en una tarjeta, **Empezar un pomodoro con esta tarea**).
+2. Elige la tarea, si quieres, y pulsa **Empezar pomodoro**.
+3. Al terminar suena y vibra si la app está abierta, y llega un aviso aunque esté cerrada (con los avisos activados
+   en el dispositivo). Después te propone el descanso que toca.
+
+- Mientras hay uno en marcha, abajo a la izquierda se ve el tiempo que queda, en cualquier pantalla. En el escritorio
+  también en el título de la pestaña.
+- Un pomodoro detenido antes de tiempo no cuenta.
+- Las duraciones se cambian en la misma pantalla y se guardan en cada dispositivo. «Aviso al terminar» se puede apagar.
+- **Estadísticas** de 7 días, 30 días o el año: pomodoros, tiempo concentrado, días seguidos, por tablero y las tareas
+  con más pomodoros.
+- Sin conexión también funciona; el pomodoro se envía al servidor al volver la conexión. Lo único que no hay sin
+  conexión es el aviso con la app cerrada.
+
+## Calendario del móvil
+
+*Ajustes → Calendario del móvil → Crear enlace* te da un enlace para suscribirte desde la app de calendario:
+
+- **iPhone**: toca *Añadir al calendario*, o *Ajustes → Calendario → Cuentas → Añadir cuenta → Otra → Añadir
+  calendario suscrito* y pega el enlace. Elige guardarlo **En mi iPhone**: así las tareas no pasan por iCloud.
+- **Google Calendar u Outlook**: *Añadir calendario → Desde URL*. Solo funciona si tu servidor es accesible desde
+  internet.
+
+Aparecen tus tareas pendientes con fecha: las de todo el día, como evento de día completo; las que tienen hora, a esa
+hora. Las completadas desaparecen en la siguiente actualización, que la app de calendario hace sola (normalmente cada
+hora). Es de solo lectura: las tareas se cambian en Tackboard.
+
+Puedes quitar tableros del calendario, crear un enlace nuevo (el anterior deja de funcionar) o desactivarlo. Cambiar
+la contraseña o cerrar las demás sesiones también lo desactiva.
+
+El enlace es como una contraseña: quien lo tenga ve los títulos y fechas de tus tareas.
+
 ## Hoy
 
 Reúne las tarjetas de todos tus tableros:
@@ -113,4 +165,5 @@ Si dos personas cambian **la misma tarjeta** sin conexión, gana el último camb
 - Nombre visible y si aceptas invitaciones.
 - Tema claro, oscuro o automático.
 - Cambiar la contraseña, generar un código de recuperación nuevo y cerrar la sesión en los demás dispositivos.
+- **Calendario del móvil**: el enlace de calendario.
 - **Descargar todos mis datos** (JSON) y **Eliminar mi cuenta**.

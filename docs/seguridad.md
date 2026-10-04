@@ -30,6 +30,10 @@ En memoria; nada se escribe en disco.
 | Altas en un tablero | 10 al día |
 | Peticiones por sesión | 600 por minuto |
 | Tokens no válidos por IP | 60 cada 5 min (no afecta a las sesiones válidas) |
+| Pomodoro: empezar, detener o enviar los hechos sin conexión | 120 por hora por usuario |
+| Enlaces de calendario nuevos | 10 por hora por usuario |
+| Descargas del calendario | 60 por hora por enlace |
+| Enlaces de calendario que no existen | 20 por hora por IP |
 
 Las claves caducan con su ventana (como mucho, una hora). Si hay demasiadas, se descartan las más antiguas.
 La IP real llega en `X-Real-IP` desde Caddy, que solo se fía de `X-Forwarded-For` si la petición viene de un
@@ -88,6 +92,26 @@ proxy de confianza (`tackboard-admin proxy`).
 - Antes de entregar un aviso se vuelve a comprobar que la persona sigue siendo miembro del tablero.
 - El registro de avisos (qué tarjeta y cuándo) se borra a los 3 días.
 
+## Pomodoro, repetición y calendario
+
+- **Pomodoro**: solo se puede asociar a tarjetas de tableros de los que se es miembro, y se vuelve a comprobar antes
+  de poner su título en un aviso. Las estadísticas no nombran tableros ni tarjetas de los que ya no se es miembro.
+  Los hechos sin conexión se aceptan como mucho 7 días después, sin solaparse y con un máximo de 48 al día.
+  El aviso al terminar respeta «Recibir avisos» y «Aviso al terminar».
+- **Repetición**: la regla se valida en el servidor (frecuencia de una lista, 1-99, días 0-6). El enlace entre una
+  tarjeta completada y la siguiente solo vale dentro del mismo tablero, y el cliente solo borra la siguiente si es
+  del mismo tablero y nadie la ha tocado.
+- **Calendario**: el enlace es aleatorio de 256 bits y en la base de datos solo está su sha256. Se busca por ese
+  resumen, así que no hay comparación que revele nada por tiempo. Quien no tiene un enlace válido recibe 404, y a
+  partir de 20 intentos por hora, 429.
+  - Se desactiva al crear otro, al cambiar la contraseña (también el administrador), al cerrar las demás sesiones y
+    al recuperar la cuenta. Con la cuenta desactivada devuelve 404.
+  - Los títulos ya llegan limpios de caracteres de control y se escapan según el RFC 5545, así que una tarjeta no
+    puede inyectar eventos ni campos.
+  - La dirección de la tarjeta (`URL:`) usa la cabecera `Host` solo si es un nombre válido; solo afecta a quien hace la
+    petición.
+  - El servidor no registra las rutas pedidas y Caddy no guarda registro de accesos, así que el enlace no queda escrito.
+
 ## Servidor
 
 - **Escucha** solo en `127.0.0.1`, detrás de Caddy.
@@ -123,6 +147,18 @@ En la versión 1.1 una tercera revisión, centrada en los avisos, no encontró f
 miembro del tablero, pero sí abusos posibles: saturar el planificador con miles de tarjetas, repetir avisos cambiando la
 hora, direcciones de suscripción con puertos raros y avisos que seguían llegando tras cerrar sesión. Están corregidos
 con sus pruebas.
+
+En la versión 1.2 una cuarta revisión de pomodoro, repetición y calendario no encontró fallos críticos ni altos. Encontró
+dos medios y cinco bajos, todos corregidos con prueba:
+
+- un miembro de solo lectura podía hacer que otra persona borrara una tarjeta de otro tablero a través del enlace de
+  repetición;
+- el tope diario de pomodoros sin conexión se podía saltar y la comprobación era cara;
+- el enlace de calendario sobrevivía a un cambio de contraseña;
+- el calendario recorría todas las tarjetas;
+- el límite por IP del calendario lo compartían todos los usuarios detrás de la misma IP;
+- el aviso del pomodoro no respetaba «Recibir avisos»;
+- dos dispositivos sin conexión podían duplicar la siguiente de una tarea que se repite.
 
 ## Pendiente de ti si la publicas
 

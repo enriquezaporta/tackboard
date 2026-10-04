@@ -952,6 +952,220 @@ class BackendTest(unittest.TestCase):
         n.tick(due + 1000)
         self.assertEqual(sent, [])
 
+    # ---------------------------------------------------------------- 1.2: repetición, pomodoro, calendario
+
+    def test_repeat_validation(self):
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        good = card(server.b64u(os.urandom(16)), bid, col, due="2030-01-31",
+                    repeat={"freq": "month", "every": 1, "days": [], "day": 31})
+        self.assertEqual(self.sync(a, [good])["rejected"], [])
+        for bad in ({"freq": "hourly"}, {"freq": "week", "every": 0}, {"freq": "week", "days": [7]},
+                    {"freq": "day", "every": "2"}, {"freq": "month", "day": 32}, "daily"):
+            c = card(server.b64u(os.urandom(16)), bid, col, due="2030-01-31", repeat=bad)
+            self.assertEqual(len(self.sync(a, [c])["rejected"]), 1, bad)
+        # Sin fecha, la repetición se quita.
+        c = card(server.b64u(os.urandom(16)), bid, col, repeat={"freq": "day", "every": 1, "days": []})
+        self.sync(a, [c])
+        r = self.sync(a)["changes"]
+        self.assertIsNone([x for x in r if x["id"] == c["id"]][0]["data"]["repeat"])
+
+    def pomo_setup(self):
+        a, bid, col, sent, n = self.notify_setup()
+        c = card(server.b64u(os.urandom(16)), bid, col, "Escribir informe")
+        self.sync(a, [c])
+        return a, bid, c["id"], sent, n
+
+    def test_pomodoro_flow(self):
+        a, bid, cid, sent, n = self.pomo_setup()
+        st, r = a.post("/api/pomo/start", {"phase": "focus", "minutes": 25, "cardId": cid})
+        self.assertEqual(st, 200, r)
+        self.assertEqual(r["active"]["cardId"], cid)
+        self.assertEqual(r["active"]["endsAt"] - r["active"]["startedAt"], 25 * 60000)
+        end = r["active"]["endsAt"]
+        self.assertEqual(n.pomo_tick(end - 1000), 0)
+        self.assertEqual(n.pomo_tick(end + 1000), 1)
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["title"], "Pomodoro terminado")
+        self.assertNotIn("Escribir", sent[0]["body"])     # sin títulos por defecto
+        self.assertEqual(sent[0]["url"], "/#/pomodoro")
+        st, s = a.get("/api/pomo/stats?days=7")
+        self.assertEqual(s["total"]["count"], 1)
+        self.assertEqual(s["cards"][0]["cardId"], cid)
+        self.assertEqual(s["boards"][0]["boardId"], bid)
+        self.assertEqual(s["streak"], 1)
+        # Descanso: avisa, pero no cuenta como pomodoro.
+        st, r = a.post("/api/pomo/start", {"phase": "short", "minutes": 5, "cardId": cid})
+        self.assertIsNone(r["active"]["cardId"])
+        n.pomo_tick(r["active"]["endsAt"] + 1000)
+        self.assertEqual(sent[-1]["title"], "Descanso terminado")
+        self.assertEqual(a.get("/api/pomo/stats")[1]["total"]["count"], 1)
+        # Detener: no cuenta.
+        st, r = a.post("/api/pomo/start", {"phase": "focus", "minutes": 25})
+        a.post("/api/pomo/stop", {"id": r["active"]["id"]})
+        self.assertIsNone(a.get("/api/pomo")[1]["active"])
+        n.pomo_tick(r["active"]["endsAt"] + 1000)
+        self.assertEqual(a.get("/api/pomo/stats")[1]["total"]["count"], 1)
+        # Sin avisos de pomodoro si se desactivan.
+        a.post("/api/push/prefs", {"pomoPush": False})
+        st, r = a.post("/api/pomo/start", {"phase": "focus", "minutes": 1})
+        before = len(sent)
+        n.pomo_tick(r["active"]["endsAt"] + 1000)
+        self.assertEqual(len(sent), before)
+        self.assertEqual(a.get("/api/pomo/stats")[1]["total"]["count"], 2)
+
+    def test_pomodoro_validation_and_privacy(self):
+        a, bid, cid, sent, n = self.pomo_setup()
+        b = self.user()
+        for body in ({"phase": "nap", "minutes": 5}, {"phase": "focus", "minutes": 0}, {"phase": "focus", "minutes": 121},
+                     {"phase": "focus", "minutes": "25"}, {"phase": "focus", "minutes": 25, "cardId": "../x"}):
+            self.assertEqual(a.post("/api/pomo/start", body)[0], 400, body)
+        # Con una tarjeta de un tablero ajeno: prohibido.
+        self.assertEqual(b.post("/api/pomo/start", {"phase": "focus", "minutes": 25, "cardId": cid})[0], 403)
+        # Tras salir del tablero, sus estadísticas no nombran ni el tablero ni la tarjeta.
+        self.share(a, b, bid, "read")
+        st, r = b.post("/api/pomo/start", {"phase": "focus", "minutes": 25, "cardId": cid})
+        self.assertEqual(st, 200)
+        n.pomo_tick(r["active"]["endsAt"] + 1000)
+        self.assertEqual(b.get("/api/pomo/stats")[1]["cards"][0]["cardId"], cid)
+        a.delete("/api/boards/%s/members/%s" % (bid, b.username))
+        s = b.get("/api/pomo/stats")[1]
+        self.assertEqual(s["cards"], [])
+        self.assertEqual(s["boards"], [{"boardId": None, "count": 1, "minutes": 25}])
+        # En la exportación y al borrar la cuenta.
+        exp = b.get("/api/export")[1]
+        self.assertEqual(len(exp["pomodoros"]), 1)
+        b.post("/api/me/delete", {"password": "secreto123"})
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM pomo_log WHERE card_id=? AND minutes=25", (cid,))[0], 0)
+
+    def test_pomodoro_offline_log(self):
+        a, bid, cid, sent, n = self.pomo_setup()
+        t = now_ms()
+        items = [{"cardId": cid, "startedAt": t - 3 * 3600_000, "minutes": 25},
+                 {"cardId": cid, "startedAt": t - 3 * 3600_000 + 60_000, "minutes": 25},   # se solapa: no
+                 {"startedAt": t - 8 * 86400_000, "minutes": 25},                          # muy antiguo: no
+                 {"startedAt": t + 3600_000, "minutes": 25},                               # futuro: no
+                 {"startedAt": t - 3600_000, "minutes": 500}]                              # demasiado largo: no
+        st, r = a.post("/api/pomo/log", {"items": items})
+        self.assertEqual((st, r["added"]), (200, 1))
+        # Máximo diario.
+        many = [{"startedAt": t - 2 * 3600_000 + i * 60_000, "minutes": 1} for i in range(50)]
+        a.post("/api/pomo/log", {"items": many})
+        with self.store.lock:
+            n_day = self.store.one("SELECT COUNT(*) FROM pomo_log WHERE user_id=(SELECT id FROM users WHERE username=?)",
+                                   (a.username,))[0]
+        self.assertLessEqual(n_day, server.POMO_DAY_CAP)
+        self.assertEqual(a.post("/api/pomo/log", {"items": "x"})[0], 400)
+
+    def test_ical_feed(self):
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        bid2, col2 = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        due = self.madrid_ms(2030, 6, 1, 10, 30)
+        self.sync(a, [
+            card(server.b64u(os.urandom(16)), bid, col, "Reunión, con; comas\\y barra", due="2030-06-01", dueTime="10:30", dueAt=due, alertBase=due),
+            card(server.b64u(os.urandom(16)), bid, col, "Todo el día", due="2030-06-02"),
+            card(server.b64u(os.urandom(16)), bid, col, "Hecha", due="2030-06-02", done=True),
+            card(server.b64u(os.urandom(16)), bid, col, "Sin fecha"),
+            card(server.b64u(os.urandom(16)), bid2, col2, "Otro tablero " + "x" * 150, due="2030-06-03"),
+        ])
+        self.assertFalse(a.get("/api/ical")[1]["active"])
+        st, r = a.post("/api/ical/new")
+        self.assertEqual(st, 200)
+        path = r["path"]
+        anon = Client(self.base)
+
+        def fetch(p=path):
+            req = urllib.request.Request(self.base + p, headers={"X-Real-IP": "10.9.9.9", "Host": "tackboard.home.arpa"})
+            try:
+                with urllib.request.urlopen(req) as res:
+                    return res.status, res.headers.get("Content-Type"), res.read().decode()
+            except urllib.error.HTTPError as e:
+                return e.code, None, ""
+        st, ctype, body = fetch()
+        self.assertEqual(st, 200)
+        self.assertTrue(ctype.startswith("text/calendar"))
+        self.assertIn("BEGIN:VCALENDAR\r\n", body)
+        self.assertIn("SUMMARY:Reunión\\, con\\; comas\\\\y barra", body)
+        self.assertIn("DTSTART:20300601T083000Z", body)
+        self.assertIn("DTSTART;VALUE=DATE:20300602", body)
+        self.assertIn("URL:https://tackboard.home.arpa/#/tarjeta/", body)
+        self.assertNotIn("Hecha", body)
+        self.assertNotIn("Sin fecha", body)
+        self.assertTrue(all(len(l.encode()) <= 75 for l in body.split("\r\n")))
+        # Excluir un tablero.
+        a.post("/api/ical/prefs", {"excluded": [bid2]})
+        self.assertNotIn("Otro tablero", fetch()[2])
+        self.assertTrue(a.get("/api/ical")[1]["lastFetch"])
+        # Un enlace nuevo invalida el anterior; desactivar, también.
+        new_path = a.post("/api/ical/new")[1]["path"]
+        self.assertEqual(fetch()[0], 404)
+        self.assertEqual(fetch(new_path)[0], 200)
+        self.assertEqual(a.get("/api/ical")[1]["excluded"], [bid2])
+        a.post("/api/ical/revoke")
+        self.assertEqual(fetch(new_path)[0], 404)
+        # Enlaces inventados: 404 y, si se insiste, límite.
+        codes = [fetch("/api/ical/%s.ics" % server.b64u(os.urandom(32)))[0] for _ in range(25)]
+        self.assertEqual(codes[0], 404)
+        self.assertIn(429, codes)
+        self.assertEqual(anon.get("/api/ical")[0], 401)
+
+    def test_ical_revoked_on_recover_and_disable(self):
+        a = self.user()
+        path = a.post("/api/ical/new")[1]["path"]
+        with self.store.lock:
+            uid = self.store.one("SELECT id FROM users WHERE username=?", (a.username,))["id"]
+            self.store.x("UPDATE users SET disabled=1 WHERE id=?", (uid,))
+        req = urllib.request.Request(self.base + path, headers={"X-Real-IP": "10.9.9.8"})
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            urllib.request.urlopen(req)
+        self.assertEqual(cm.exception.code, 404)
+        with self.store.lock:
+            self.store.x("UPDATE users SET disabled=0 WHERE id=?", (uid,))
+        st, r = Client(self.base).post("/api/auth/recover", {"username": a.username, "code": a.code, "password": "otrosecreto1"})
+        self.assertEqual(st, 200, r)
+        with self.store.lock:
+            self.assertEqual(self.store.one("SELECT COUNT(*) FROM ical_tokens WHERE user_id=?", (uid,))[0], 0)
+
+    def test_review_fixes_v12(self):
+        # repeatedAs que apunta a otro tablero: se ignora.
+        a = self.user()
+        bid, col = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        bid2, col2 = self.new_board(a, server.b64u(os.urandom(16)), server.b64u(os.urandom(16)))
+        other = card(server.b64u(os.urandom(16)), bid2, col2, "En otro tablero")
+        self.sync(a, [other])
+        c = card(server.b64u(os.urandom(16)), bid, col, "Hecha", due="2030-01-01", done=True,
+                 repeatedAs={"id": other["id"], "at": other["updatedAt"]})
+        self.sync(a, [c])
+        got = [x for x in self.sync(a)["changes"] if x["id"] == c["id"]][0]
+        self.assertIsNone(got["data"]["repeatedAs"])
+        # El tope diario de pomodoros no se salta enviándolos de más nuevo a más antiguo.
+        t = now_ms()
+        items = [{"startedAt": t - 3600_000 - i * 61_000, "minutes": 1} for i in range(50)]
+        a.post("/api/pomo/log", {"items": items})
+        a.post("/api/pomo/log", {"items": [{"startedAt": t - 20 * 3600_000 - i * 61_000, "minutes": 1} for i in range(50)]})
+        with self.store.lock:
+            n = self.store.one("SELECT COUNT(*) FROM pomo_log WHERE user_id=(SELECT id FROM users WHERE username=?)", (a.username,))[0]
+        self.assertLessEqual(n, server.POMO_DAY_CAP)
+        # Cambiar la contraseña o cerrar las demás sesiones desactiva el enlace de calendario.
+        a.post("/api/ical/new")
+        st, r = a.post("/api/me/password", {"current": "secreto123", "password": "secreto456"})
+        self.assertEqual(st, 200, r)
+        a.token = r.get("token", a.token)
+        self.assertFalse(a.get("/api/ical")[1]["active"])
+        a.post("/api/ical/new")
+        a.post("/api/auth/logout-others")
+        self.assertFalse(a.get("/api/ical")[1]["active"])
+
+    def test_pomodoro_respects_global_switch(self):
+        a, bid, cid, sent, n = self.pomo_setup()
+        a.post("/api/push/prefs", {"enabled": False})
+        st, r = a.post("/api/pomo/start", {"phase": "focus", "minutes": 5})
+        before = len(sent)
+        n.pomo_tick(r["active"]["endsAt"] + 1000)
+        self.assertEqual(len(sent), before)
+
     def test_unread_body_closes_connection(self):
         """Un cuerpo no leído no debe interpretarse como la siguiente petición (respuestas cruzadas)."""
         import socket
